@@ -88,7 +88,6 @@ class ImpresoraController {
         });
       }
 
-      // Verificar si ya existe
       const existente = await this.impresoraModel.findBySerial(
         impresoraData.serial_number,
       );
@@ -97,6 +96,18 @@ class ImpresoraController {
           error: "Ya existe una impresora con ese serial_number",
         });
       }
+
+      // Asegurar que los campos de color existen
+      impresoraData.precio_copia_color1 =
+        impresoraData.precio_copia_color1 ||
+        impresoraData.precio_copia_color ||
+        0;
+      impresoraData.precio_copia_color2 =
+        impresoraData.precio_copia_color2 || 0;
+      impresoraData.precio_copia_color3 =
+        impresoraData.precio_copia_color3 || 0;
+      impresoraData.tipo_facturacion =
+        impresoraData.tipo_facturacion || "BN_AND_COLOR";
 
       const nuevaImpresora = await this.impresoraModel.create(impresoraData);
       res.status(201).json(nuevaImpresora);
@@ -115,6 +126,16 @@ class ImpresoraController {
       if (!impresora) {
         return res.status(404).json({ error: "Impresora no encontrada" });
       }
+
+      // Asegurar que los campos de color existen
+      impresoraData.precio_copia_color1 =
+        impresoraData.precio_copia_color1 ||
+        impresoraData.precio_copia_color ||
+        0;
+      impresoraData.precio_copia_color2 =
+        impresoraData.precio_copia_color2 || 0;
+      impresoraData.precio_copia_color3 =
+        impresoraData.precio_copia_color3 || 0;
 
       const impresoraActualizada = await this.impresoraModel.update(
         id,

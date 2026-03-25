@@ -80,14 +80,9 @@ class RegistroController {
       const registroData = req.body;
 
       // Validar datos requeridos
-      if (
-        !registroData.impresora_id ||
-        registroData.copias_bn_total === undefined ||
-        registroData.copias_color_total === undefined
-      ) {
+      if (!registroData.impresora_id) {
         return res.status(400).json({
-          error:
-            "Faltan campos requeridos: impresora_id, copias_bn_total, copias_color_total",
+          error: "Faltan campos requeridos: impresora_id",
         });
       }
 
@@ -98,6 +93,14 @@ class RegistroController {
       if (!impresora) {
         return res.status(400).json({ error: "La impresora no existe" });
       }
+
+      // Asegurar que los campos de color existen
+      registroData.copias_color1_total =
+        registroData.copias_color1_total ||
+        registroData.copias_color_total ||
+        0;
+      registroData.copias_color2_total = registroData.copias_color2_total || 0;
+      registroData.copias_color3_total = registroData.copias_color3_total || 0;
 
       const nuevoRegistro = await this.registroModel.create(registroData);
       res.status(201).json(nuevoRegistro);
@@ -117,18 +120,19 @@ class RegistroController {
           .json({ error: "Se requiere un array de registros" });
       }
 
-      // Validar cada registro
+      // Validar y normalizar cada registro
       for (const registro of registros) {
-        if (
-          !registro.impresora_id ||
-          registro.copias_bn_total === undefined ||
-          registro.copias_color_total === undefined
-        ) {
+        if (!registro.impresora_id) {
           return res.status(400).json({
-            error:
-              "Todos los registros deben tener impresora_id, copias_bn_total y copias_color_total",
+            error: "Todos los registros deben tener impresora_id",
           });
         }
+
+        // Normalizar campos de color
+        registro.copias_color1_total =
+          registro.copias_color1_total || registro.copias_color_total || 0;
+        registro.copias_color2_total = registro.copias_color2_total || 0;
+        registro.copias_color3_total = registro.copias_color3_total || 0;
 
         // Verificar que la impresora existe
         const impresora = await this.impresoraModel.findById(

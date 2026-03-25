@@ -3,7 +3,6 @@ class RegistroModel {
     this.pool = pool;
   }
 
-  // Obtener registros con filtros
   async findAll(filtros = {}) {
     let query = `
       SELECT r.*, i.serial_number, i.modelo, e.nombre_oficial as empresa_nombre
@@ -40,7 +39,6 @@ class RegistroModel {
     return rows;
   }
 
-  // Obtener registro por ID
   async findById(id) {
     const [rows] = await this.pool.query(
       "SELECT * FROM registros_contadores WHERE id = ?",
@@ -49,19 +47,26 @@ class RegistroModel {
     return rows[0];
   }
 
-  // Crear registro
   async create(registroData) {
-    const { impresora_id, copias_bn_total, copias_color_total, fecha_lectura } =
-      registroData;
+    const {
+      impresora_id,
+      copias_bn_total,
+      copias_color1_total,
+      copias_color2_total,
+      copias_color3_total,
+      fecha_lectura,
+    } = registroData;
 
     const [result] = await this.pool.query(
       `INSERT INTO registros_contadores 
-       (impresora_id, copias_bn_total, copias_color_total, fecha_lectura) 
-       VALUES (?, ?, ?, ?)`,
+       (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         impresora_id,
-        copias_bn_total,
-        copias_color_total,
+        copias_bn_total || 0,
+        copias_color1_total || 0,
+        copias_color2_total || 0,
+        copias_color3_total || 0,
         fecha_lectura || new Date(),
       ],
     );
@@ -69,23 +74,24 @@ class RegistroModel {
     return this.findById(result.insertId);
   }
 
-  // Crear múltiples registros (bulk insert)
   async createBulk(registros) {
     if (!registros.length) return { count: 0 };
 
     const values = registros.map((r) => [
       r.impresora_id,
-      r.copias_bn_total,
-      r.copias_color_total,
+      r.copias_bn_total || 0,
+      r.copias_color1_total || 0,
+      r.copias_color2_total || 0,
+      r.copias_color3_total || 0,
       r.fecha_lectura || new Date(),
     ]);
 
-    const placeholders = values.map(() => "(?, ?, ?, ?)").join(",");
+    const placeholders = values.map(() => "(?, ?, ?, ?, ?, ?)").join(",");
     const flatValues = values.flat();
 
     const [result] = await this.pool.query(
       `INSERT INTO registros_contadores 
-       (impresora_id, copias_bn_total, copias_color_total, fecha_lectura) 
+       (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
        VALUES ${placeholders}`,
       flatValues,
     );
@@ -93,16 +99,17 @@ class RegistroModel {
     return { count: result.affectedRows };
   }
 
-  // Obtener estadísticas de lecturas
   async getStats(impresora_id = null, periodo = null) {
     let query = `
       SELECT 
         COUNT(*) as total_lecturas,
-        AVG(copias_bn_total + copias_color_total) as promedio_copias,
-        MAX(copias_bn_total + copias_color_total) as max_copias,
-        MIN(copias_bn_total + copias_color_total) as min_copias,
+        AVG(copias_bn_total + copias_color1_total + copias_color2_total + copias_color3_total) as promedio_copias,
+        MAX(copias_bn_total + copias_color1_total + copias_color2_total + copias_color3_total) as max_copias,
+        MIN(copias_bn_total + copias_color1_total + copias_color2_total + copias_color3_total) as min_copias,
         SUM(copias_bn_total) as total_bn,
-        SUM(copias_color_total) as total_color
+        SUM(copias_color1_total) as total_color1,
+        SUM(copias_color2_total) as total_color2,
+        SUM(copias_color3_total) as total_color3
       FROM registros_contadores
       WHERE 1=1
     `;
@@ -122,14 +129,15 @@ class RegistroModel {
     return rows[0];
   }
 
-  // Obtener lecturas agrupadas por mes
   async getLecturasPorMes(impresora_id = null, year = null) {
     let query = `
       SELECT 
         DATE_FORMAT(fecha_lectura, '%Y-%m') as mes,
         COUNT(*) as total_lecturas,
         SUM(copias_bn_total) as total_bn,
-        SUM(copias_color_total) as total_color
+        SUM(copias_color1_total) as total_color1,
+        SUM(copias_color2_total) as total_color2,
+        SUM(copias_color3_total) as total_color3
       FROM registros_contadores
       WHERE 1=1
     `;

@@ -102,13 +102,15 @@ class ConsumoController {
 
       await connection.beginTransaction();
 
-      // Obtener todas las impresoras activas
-      const impresoras = await this.impresoraModel.findAll({ activa: true });
+      // Obtener todas las impresoras activas con sus datos completos
+      const impresoras = await connection.query(`
+      SELECT * FROM impresoras WHERE activa = 1
+    `);
 
       // Calcular consumos
       const resultados = await this.consumoModel.calcularConsumosPeriodo(
         periodo,
-        impresoras,
+        impresoras[0],
         connection,
       );
 
@@ -122,7 +124,7 @@ class ConsumoController {
       res.json({
         message: `Consumos calculados para ${periodo}`,
         calculados: resultados.length,
-        total: impresoras.length,
+        total: impresoras[0].length,
       });
     } catch (error) {
       await connection.rollback();

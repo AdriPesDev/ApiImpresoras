@@ -3,10 +3,11 @@ class ConsumoModel {
     this.pool = pool;
   }
 
-  // Obtener consumos con filtros
   async findAll(filtros = {}) {
     let query = `
-      SELECT c.*, i.serial_number, i.modelo, e.nombre_oficial 
+      SELECT c.*, i.serial_number, i.modelo, e.nombre_oficial,
+             i.tipo_facturacion, i.precio_copia_bn, i.precio_copia_color1, 
+             i.precio_copia_color2, i.precio_copia_color3
       FROM consumos_mensuales c
       JOIN impresoras i ON c.impresora_id = i.id
       LEFT JOIN empresas e ON i.empresa_id = e.id
@@ -35,7 +36,6 @@ class ConsumoModel {
     return rows;
   }
 
-  // Obtener consumo por ID
   async findById(id) {
     const [rows] = await this.pool.query(
       "SELECT * FROM consumos_mensuales WHERE id = ?",
@@ -44,7 +44,6 @@ class ConsumoModel {
     return rows[0];
   }
 
-  // Obtener consumo por impresora y período
   async findByImpresoraYPeriodo(impresora_id, periodo) {
     const [rows] = await this.pool.query(
       "SELECT * FROM consumos_mensuales WHERE impresora_id = ? AND periodo = ?",
@@ -53,59 +52,85 @@ class ConsumoModel {
     return rows[0];
   }
 
-  // Crear o actualizar consumo
   async upsert(consumoData) {
     const {
       impresora_id,
       periodo,
       copias_bn_mes,
-      copias_color_mes,
+      copias_color1_mes,
+      copias_color2_mes,
+      copias_color3_mes,
       importe_bn,
-      importe_color,
+      importe_color1,
+      importe_color2,
+      importe_color3,
       total_facturar,
       contador_bn_inicio,
       contador_bn_fin,
-      contador_color_inicio,
-      contador_color_fin,
+      contador_color1_inicio,
+      contador_color1_fin,
+      contador_color2_inicio,
+      contador_color2_fin,
+      contador_color3_inicio,
+      contador_color3_fin,
     } = consumoData;
 
     const [result] = await this.pool.query(
       `
       INSERT INTO consumos_mensuales 
-      (impresora_id, periodo, copias_bn_mes, copias_color_mes, 
-       importe_bn, importe_color, total_facturar,
-       contador_bn_inicio, contador_bn_fin, contador_color_inicio, contador_color_fin)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (impresora_id, periodo, 
+       copias_bn_mes, copias_color1_mes, copias_color2_mes, copias_color3_mes,
+       importe_bn, importe_color1, importe_color2, importe_color3, total_facturar,
+       contador_bn_inicio, contador_bn_fin,
+       contador_color1_inicio, contador_color1_fin,
+       contador_color2_inicio, contador_color2_fin,
+       contador_color3_inicio, contador_color3_fin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         copias_bn_mes = VALUES(copias_bn_mes),
-        copias_color_mes = VALUES(copias_color_mes),
+        copias_color1_mes = VALUES(copias_color1_mes),
+        copias_color2_mes = VALUES(copias_color2_mes),
+        copias_color3_mes = VALUES(copias_color3_mes),
         importe_bn = VALUES(importe_bn),
-        importe_color = VALUES(importe_color),
+        importe_color1 = VALUES(importe_color1),
+        importe_color2 = VALUES(importe_color2),
+        importe_color3 = VALUES(importe_color3),
         total_facturar = VALUES(total_facturar),
         contador_bn_inicio = VALUES(contador_bn_inicio),
         contador_bn_fin = VALUES(contador_bn_fin),
-        contador_color_inicio = VALUES(contador_color_inicio),
-        contador_color_fin = VALUES(contador_color_fin)
+        contador_color1_inicio = VALUES(contador_color1_inicio),
+        contador_color1_fin = VALUES(contador_color1_fin),
+        contador_color2_inicio = VALUES(contador_color2_inicio),
+        contador_color2_fin = VALUES(contador_color2_fin),
+        contador_color3_inicio = VALUES(contador_color3_inicio),
+        contador_color3_fin = VALUES(contador_color3_fin)
     `,
       [
         impresora_id,
         periodo,
         copias_bn_mes,
-        copias_color_mes,
+        copias_color1_mes,
+        copias_color2_mes,
+        copias_color3_mes,
         importe_bn,
-        importe_color,
+        importe_color1,
+        importe_color2,
+        importe_color3,
         total_facturar,
         contador_bn_inicio,
         contador_bn_fin,
-        contador_color_inicio,
-        contador_color_fin,
+        contador_color1_inicio,
+        contador_color1_fin,
+        contador_color2_inicio,
+        contador_color2_fin,
+        contador_color3_inicio,
+        contador_color3_fin,
       ],
     );
 
     return this.findByImpresoraYPeriodo(impresora_id, periodo);
   }
 
-  // Marcar como facturado
   async marcarFacturado(id) {
     await this.pool.query(
       "UPDATE consumos_mensuales SET facturado = 1 WHERE id = ?",
@@ -114,7 +139,6 @@ class ConsumoModel {
     return this.findById(id);
   }
 
-  // Obtener resumen de facturación
   async getResumenFacturacion(periodo = null) {
     let query = `
       SELECT 
@@ -122,7 +146,9 @@ class ConsumoModel {
         SUM(CASE WHEN facturado = 1 THEN total_facturar ELSE 0 END) as facturado,
         COUNT(DISTINCT impresora_id) as impresoras_con_consumo,
         SUM(copias_bn_mes) as total_bn,
-        SUM(copias_color_mes) as total_color
+        SUM(copias_color1_mes) as total_color1,
+        SUM(copias_color2_mes) as total_color2,
+        SUM(copias_color3_mes) as total_color3
       FROM consumos_mensuales
     `;
     const params = [];
@@ -136,7 +162,6 @@ class ConsumoModel {
     return rows[0];
   }
 
-  // Calcular consumos para un período
   async calcularConsumosPeriodo(periodo, impresoras, connection) {
     const conn = connection || this.pool;
     const [year, month] = periodo.split("-").map(Number);
@@ -147,14 +172,17 @@ class ConsumoModel {
     const resultados = [];
 
     for (const impresora of impresoras) {
-      // Obtener primer y último registro del período
       const [registros] = await conn.query(
         `
         SELECT 
           MIN(copias_bn_total) as bn_inicio,
           MAX(copias_bn_total) as bn_fin,
-          MIN(copias_color_total) as color_inicio,
-          MAX(copias_color_total) as color_fin
+          MIN(copias_color1_total) as color1_inicio,
+          MAX(copias_color1_total) as color1_fin,
+          MIN(copias_color2_total) as color2_inicio,
+          MAX(copias_color2_total) as color2_fin,
+          MIN(copias_color3_total) as color3_inicio,
+          MAX(copias_color3_total) as color3_fin
         FROM registros_contadores 
         WHERE impresora_id = ? 
           AND fecha_lectura BETWEEN ? AND ?
@@ -163,8 +191,11 @@ class ConsumoModel {
       );
 
       if (registros.length > 0 && registros[0].bn_inicio !== null) {
+        // Calcular copias del período
         const bnMes = registros[0].bn_fin - registros[0].bn_inicio;
-        const colorMes = registros[0].color_fin - registros[0].color_inicio;
+        const color1Mes = registros[0].color1_fin - registros[0].color1_inicio;
+        const color2Mes = registros[0].color2_fin - registros[0].color2_inicio;
+        const color3Mes = registros[0].color3_fin - registros[0].color3_inicio;
 
         // Obtener contrato activo
         const [contratos] = await conn.query(
@@ -172,26 +203,84 @@ class ConsumoModel {
           [impresora.id],
         );
 
-        let importeBn = bnMes * impresora.precio_copia_bn;
-        let importeColor = colorMes * impresora.precio_copia_color;
-        let totalFacturar = importeBn + importeColor;
+        // Calcular importes según tipo de facturación
+        let importeBn = 0;
+        let importeColor1 = 0;
+        let importeColor2 = 0;
+        let importeColor3 = 0;
+        let totalFacturar = 0;
 
+        const tipoFacturacion = impresora.tipo_facturacion || "BN_AND_COLOR";
+
+        if (
+          tipoFacturacion === "BN_ONLY" ||
+          tipoFacturacion === "BN_AND_COLOR" ||
+          tipoFacturacion === "MULTICOLOR"
+        ) {
+          importeBn = bnMes * (impresora.precio_copia_bn || 0);
+        }
+
+        if (
+          tipoFacturacion === "COLOR_ONLY" ||
+          tipoFacturacion === "BN_AND_COLOR"
+        ) {
+          importeColor1 = color1Mes * (impresora.precio_copia_color1 || 0);
+        }
+
+        if (tipoFacturacion === "MULTICOLOR") {
+          importeColor2 = color2Mes * (impresora.precio_copia_color2 || 0);
+          importeColor3 = color3Mes * (impresora.precio_copia_color3 || 0);
+        }
+
+        totalFacturar =
+          importeBn + importeColor1 + importeColor2 + importeColor3;
+
+        // Aplicar contrato si existe
         if (contratos.length > 0) {
           const contrato = contratos[0];
-          const bnFacturable = Math.max(
-            0,
-            bnMes - contrato.copias_bn_incluidas,
-          );
-          const colorFacturable = Math.max(
-            0,
-            colorMes - contrato.copias_color_incluidas,
-          );
 
-          importeBn = bnFacturable * impresora.precio_copia_bn;
-          importeColor = colorFacturable * impresora.precio_copia_color;
+          if (
+            tipoFacturacion === "BN_ONLY" ||
+            tipoFacturacion === "BN_AND_COLOR" ||
+            tipoFacturacion === "MULTICOLOR"
+          ) {
+            const bnFacturable = Math.max(
+              0,
+              bnMes - (contrato.copias_bn_incluidas || 0),
+            );
+            importeBn = bnFacturable * (impresora.precio_copia_bn || 0);
+          }
+
+          if (
+            tipoFacturacion === "COLOR_ONLY" ||
+            tipoFacturacion === "BN_AND_COLOR"
+          ) {
+            const color1Facturable = Math.max(
+              0,
+              color1Mes - (contrato.copias_color1_incluidas || 0),
+            );
+            importeColor1 =
+              color1Facturable * (impresora.precio_copia_color1 || 0);
+          }
+
+          if (tipoFacturacion === "MULTICOLOR") {
+            const color2Facturable = Math.max(
+              0,
+              color2Mes - (contrato.copias_color2_incluidas || 0),
+            );
+            const color3Facturable = Math.max(
+              0,
+              color3Mes - (contrato.copias_color3_incluidas || 0),
+            );
+            importeColor2 =
+              color2Facturable * (impresora.precio_copia_color2 || 0);
+            importeColor3 =
+              color3Facturable * (impresora.precio_copia_color3 || 0);
+          }
+
           totalFacturar = Math.max(
-            contrato.precio_minimo,
-            importeBn + importeColor,
+            contrato.precio_minimo || 0,
+            importeBn + importeColor1 + importeColor2 + importeColor3,
           );
         }
 
@@ -199,14 +288,22 @@ class ConsumoModel {
           impresora_id: impresora.id,
           periodo,
           copias_bn_mes: bnMes,
-          copias_color_mes: colorMes,
+          copias_color1_mes: color1Mes,
+          copias_color2_mes: color2Mes,
+          copias_color3_mes: color3Mes,
           importe_bn: importeBn,
-          importe_color: importeColor,
+          importe_color1: importeColor1,
+          importe_color2: importeColor2,
+          importe_color3: importeColor3,
           total_facturar: totalFacturar,
           contador_bn_inicio: registros[0].bn_inicio,
           contador_bn_fin: registros[0].bn_fin,
-          contador_color_inicio: registros[0].color_inicio,
-          contador_color_fin: registros[0].color_fin,
+          contador_color1_inicio: registros[0].color1_inicio,
+          contador_color1_fin: registros[0].color1_fin,
+          contador_color2_inicio: registros[0].color2_inicio,
+          contador_color2_fin: registros[0].color2_fin,
+          contador_color3_inicio: registros[0].color3_inicio,
+          contador_color3_fin: registros[0].color3_fin,
         });
       }
     }

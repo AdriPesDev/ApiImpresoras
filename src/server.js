@@ -19,6 +19,7 @@ const ImpresoraController = require("./controllers/impresora.controller");
 const RegistroController = require("./controllers/registro.controller");
 const ConsumoController = require("./controllers/consumo.controller");
 const DashboardController = require("./controllers/dashboard.controller");
+const ContratoController = require("./controllers/contrato.controller");
 
 // Importar fábricas de rutas
 const createEmpresaRoutes = require("./routes/empresa.routes");
@@ -26,6 +27,7 @@ const createImpresoraRoutes = require("./routes/impresora.routes");
 const createRegistroRoutes = require("./routes/registro.routes");
 const createConsumoRoutes = require("./routes/consumo.routes");
 const createDashboardRoutes = require("./routes/dashboard.routes");
+const createContratoRoutes = require("./routes/contrato.routes");
 
 // Configurar variables de entorno
 dotenv.config();
@@ -76,6 +78,7 @@ const impresoraController = new ImpresoraController(pool);
 const registroController = new RegistroController(pool);
 const consumoController = new ConsumoController(pool);
 const dashboardController = new DashboardController(pool);
+const contratoController = new ContratoController(pool);
 
 // Configurar rutas
 app.use("/api/empresas", createEmpresaRoutes(empresaController));
@@ -83,6 +86,7 @@ app.use("/api/impresoras", createImpresoraRoutes(impresoraController));
 app.use("/api/registros", createRegistroRoutes(registroController));
 app.use("/api/consumos", createConsumoRoutes(consumoController));
 app.use("/api/dashboard", createDashboardRoutes(dashboardController));
+app.use("/api/contratos", createContratoRoutes(contratoController));
 
 // Ruta raíz
 app.get("/", (req, res) => {

@@ -3,7 +3,6 @@ class ImpresoraModel {
     this.pool = pool;
   }
 
-  // Obtener todas las impresoras
   async findAll(filtros = {}) {
     let query = `
       SELECT i.*, e.nombre_oficial as empresa_nombre 
@@ -34,7 +33,6 @@ class ImpresoraModel {
     return rows;
   }
 
-  // Obtener impresora por ID
   async findById(id) {
     const [rows] = await this.pool.query(
       `
@@ -48,7 +46,6 @@ class ImpresoraModel {
     return rows[0];
   }
 
-  // Obtener impresora por serial number
   async findBySerial(serialNumber) {
     const [rows] = await this.pool.query(
       "SELECT * FROM impresoras WHERE serial_number = ?",
@@ -57,27 +54,34 @@ class ImpresoraModel {
     return rows[0];
   }
 
-  // Crear impresora
   async create(impresoraData) {
     const {
       serial_number,
       modelo,
       empresa_id,
       precio_copia_bn,
-      precio_copia_color,
+      precio_copia_color1,
+      precio_copia_color2,
+      precio_copia_color3,
+      tipo_facturacion,
       activa,
     } = impresoraData;
 
     const [result] = await this.pool.query(
       `INSERT INTO impresoras 
-       (serial_number, modelo, empresa_id, precio_copia_bn, precio_copia_color, activa) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       (serial_number, modelo, empresa_id, 
+        precio_copia_bn, precio_copia_color1, precio_copia_color2, precio_copia_color3,
+        tipo_facturacion, activa) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         serial_number,
         modelo || null,
         empresa_id || null,
-        precio_copia_bn,
-        precio_copia_color,
+        precio_copia_bn || 0,
+        precio_copia_color1 || 0,
+        precio_copia_color2 || 0,
+        precio_copia_color3 || 0,
+        tipo_facturacion || "BN_AND_COLOR",
         activa !== undefined ? activa : 1,
       ],
     );
@@ -85,28 +89,34 @@ class ImpresoraModel {
     return this.findById(result.insertId);
   }
 
-  // Actualizar impresora
   async update(id, impresoraData) {
     const {
       serial_number,
       modelo,
       empresa_id,
       precio_copia_bn,
-      precio_copia_color,
+      precio_copia_color1,
+      precio_copia_color2,
+      precio_copia_color3,
+      tipo_facturacion,
       activa,
     } = impresoraData;
 
     await this.pool.query(
       `UPDATE impresoras SET 
        serial_number = ?, modelo = ?, empresa_id = ?, 
-       precio_copia_bn = ?, precio_copia_color = ?, activa = ? 
+       precio_copia_bn = ?, precio_copia_color1 = ?, precio_copia_color2 = ?, precio_copia_color3 = ?,
+       tipo_facturacion = ?, activa = ? 
        WHERE id = ?`,
       [
         serial_number,
         modelo,
         empresa_id,
         precio_copia_bn,
-        precio_copia_color,
+        precio_copia_color1,
+        precio_copia_color2,
+        precio_copia_color3,
+        tipo_facturacion,
         activa,
         id,
       ],
@@ -115,7 +125,6 @@ class ImpresoraModel {
     return this.findById(id);
   }
 
-  // Eliminar impresora
   async delete(id) {
     const [result] = await this.pool.query(
       "DELETE FROM impresoras WHERE id = ?",
@@ -124,7 +133,6 @@ class ImpresoraModel {
     return result.affectedRows > 0;
   }
 
-  // Obtener últimos registros de contador
   async getUltimosRegistros(id, limite = 10) {
     const [rows] = await this.pool.query(
       `
@@ -138,7 +146,6 @@ class ImpresoraModel {
     return rows;
   }
 
-  // Obtener contrato activo
   async getContratoActivo(id) {
     const [rows] = await this.pool.query(
       `
