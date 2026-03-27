@@ -71,9 +71,21 @@ const registroValidations = {
     body("copias_bn_total")
       .isInt({ min: 0 })
       .withMessage("copias_bn_total debe ser un número entero positivo"),
-    body("copias_color_total")
+    // Aceptar los 3 colores como opcionales
+    body("copias_color1_total")
+      .optional()
       .isInt({ min: 0 })
-      .withMessage("copias_color_total debe ser un número entero positivo"),
+      .withMessage("copias_color1_total debe ser un número entero positivo"),
+    body("copias_color2_total")
+      .optional()
+      .isInt({ min: 0 })
+      .withMessage("copias_color2_total debe ser un número entero positivo"),
+    body("copias_color3_total")
+      .optional()
+      .isInt({ min: 0 })
+      .withMessage("copias_color3_total debe ser un número entero positivo"),
+    // Mantener compatibilidad con campo legacy
+    body("copias_color_total").optional().isInt({ min: 0 }),
     body("fecha_lectura")
       .optional()
       .isISO8601()
@@ -84,7 +96,10 @@ const registroValidations = {
     body().isArray().withMessage("Debe enviar un array de registros"),
     body("*.impresora_id").isInt(),
     body("*.copias_bn_total").isInt({ min: 0 }),
-    body("*.copias_color_total").isInt({ min: 0 }),
+    body("*.copias_color1_total").optional().isInt({ min: 0 }),
+    body("*.copias_color2_total").optional().isInt({ min: 0 }),
+    body("*.copias_color3_total").optional().isInt({ min: 0 }),
+    body("*.copias_color_total").optional().isInt({ min: 0 }),
     validate,
   ],
 };
