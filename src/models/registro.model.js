@@ -54,17 +54,24 @@ class RegistroModel {
       copias_color1_total,
       copias_color2_total,
       copias_color3_total,
+      copias_color_total, // legacy
       fecha_lectura,
     } = registroData;
 
+    // Usar color1 si viene color_total legacy
+    const finalColor1 =
+      copias_color1_total !== undefined
+        ? copias_color1_total
+        : copias_color_total || 0;
+
     const [result] = await this.pool.query(
       `INSERT INTO registros_contadores 
-       (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
+     (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
+     VALUES (?, ?, ?, ?, ?, ?)`,
       [
         impresora_id,
         copias_bn_total || 0,
-        copias_color1_total || 0,
+        finalColor1,
         copias_color2_total || 0,
         copias_color3_total || 0,
         fecha_lectura || new Date(),
@@ -77,22 +84,29 @@ class RegistroModel {
   async createBulk(registros) {
     if (!registros.length) return { count: 0 };
 
-    const values = registros.map((r) => [
-      r.impresora_id,
-      r.copias_bn_total || 0,
-      r.copias_color1_total || 0,
-      r.copias_color2_total || 0,
-      r.copias_color3_total || 0,
-      r.fecha_lectura || new Date(),
-    ]);
+    const values = registros.map((r) => {
+      // Normalizar campos de color
+      const color1 =
+        r.copias_color1_total !== undefined
+          ? r.copias_color1_total
+          : r.copias_color_total || 0;
+      return [
+        r.impresora_id,
+        r.copias_bn_total || 0,
+        color1,
+        r.copias_color2_total || 0,
+        r.copias_color3_total || 0,
+        r.fecha_lectura || new Date(),
+      ];
+    });
 
     const placeholders = values.map(() => "(?, ?, ?, ?, ?, ?)").join(",");
     const flatValues = values.flat();
 
     const [result] = await this.pool.query(
       `INSERT INTO registros_contadores 
-       (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
-       VALUES ${placeholders}`,
+     (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
+     VALUES ${placeholders}`,
       flatValues,
     );
 
