@@ -1,3 +1,15 @@
+function formatMySQLDate(date) {
+  if (!date) return null;
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const seconds = String(d.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
 class RegistroModel {
   constructor(pool) {
     this.pool = pool;
@@ -64,6 +76,9 @@ class RegistroModel {
         ? copias_color1_total
         : copias_color_total || 0;
 
+    // Formatear fecha
+    const fechaFormateada = formatMySQLDate(fecha_lectura || new Date());
+
     const [result] = await this.pool.query(
       `INSERT INTO registros_contadores 
      (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
@@ -74,11 +89,46 @@ class RegistroModel {
         finalColor1,
         copias_color2_total || 0,
         copias_color3_total || 0,
-        fecha_lectura || new Date(),
+        fechaFormateada,
       ],
     );
 
     return this.findById(result.insertId);
+  }
+
+  async createBulk(registros) {
+    if (!registros.length) return { count: 0 };
+
+    const values = registros.map((r) => {
+      // Normalizar campos de color
+      const color1 =
+        r.copias_color1_total !== undefined
+          ? r.copias_color1_total
+          : r.copias_color_total || 0;
+      // Formatear fecha
+      const fechaFormateada = formatMySQLDate(r.fecha_lectura || new Date());
+
+      return [
+        r.impresora_id,
+        r.copias_bn_total || 0,
+        color1,
+        r.copias_color2_total || 0,
+        r.copias_color3_total || 0,
+        fechaFormateada,
+      ];
+    });
+
+    const placeholders = values.map(() => "(?, ?, ?, ?, ?, ?)").join(",");
+    const flatValues = values.flat();
+
+    const [result] = await this.pool.query(
+      `INSERT INTO registros_contadores 
+     (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
+     VALUES ${placeholders}`,
+      flatValues,
+    );
+
+    return { count: result.affectedRows };
   }
 
   async createBulk(registros) {

@@ -1,6 +1,19 @@
 const RegistroModel = require("../models/registro.model");
 const ImpresoraModel = require("../models/impresora.model");
 
+// Helper para formatear fecha a MySQL
+function formatMySQLDate(date) {
+  if (!date) return null;
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const seconds = String(d.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
 class RegistroController {
   constructor(pool) {
     this.registroModel = new RegistroModel(pool);
@@ -93,6 +106,15 @@ class RegistroController {
       registroData.copias_color2_total = registroData.copias_color2_total ?? 0;
       registroData.copias_color3_total = registroData.copias_color3_total ?? 0;
 
+      // Formatear fecha para MySQL
+      if (registroData.fecha_lectura) {
+        registroData.fecha_lectura = formatMySQLDate(
+          registroData.fecha_lectura,
+        );
+      } else {
+        registroData.fecha_lectura = formatMySQLDate(new Date());
+      }
+
       // Verificar que la impresora existe
       const impresora = await this.impresoraModel.findById(
         registroData.impresora_id,
@@ -119,7 +141,7 @@ class RegistroController {
           .json({ error: "Se requiere un array de registros" });
       }
 
-      // Normalizar cada registro
+      // Normalizar cada registro y formatear fecha
       for (const registro of registros) {
         if (!registro.impresora_id) {
           return res.status(400).json({
@@ -132,6 +154,13 @@ class RegistroController {
           registro.copias_color1_total ?? registro.copias_color_total ?? 0;
         registro.copias_color2_total = registro.copias_color2_total ?? 0;
         registro.copias_color3_total = registro.copias_color3_total ?? 0;
+
+        // Formatear fecha para MySQL
+        if (registro.fecha_lectura) {
+          registro.fecha_lectura = formatMySQLDate(registro.fecha_lectura);
+        } else {
+          registro.fecha_lectura = formatMySQLDate(new Date());
+        }
 
         // Verificar que la impresora existe
         const impresora = await this.impresoraModel.findById(
