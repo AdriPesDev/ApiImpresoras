@@ -4,7 +4,7 @@ const { registroValidations } = require("../middleware/validation.middleware");
 
 module.exports = (controller) => {
   // GET /api/registros
-  router.get("/", controller.getAll);
+  router.get("/", controller.getAll); // ← controller.getAll debe ser una función
 
   // GET /api/registros/estadisticas
   router.get("/estadisticas", controller.getStats);
