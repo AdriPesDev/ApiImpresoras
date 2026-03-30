@@ -67,6 +67,11 @@ class ImpresoraModel {
       activa,
     } = impresoraData;
 
+    const precioBn = this._toNumber(precio_copia_bn, 0.01);
+    const precioC1 = this._toNumber(precio_copia_color1, 0.03);
+    const precioC2 = this._toNumber(precio_copia_color2, 0.05);
+    const precioC3 = this._toNumber(precio_copia_color3, 0.07);
+
     const [result] = await this.pool.query(
       `INSERT INTO impresoras 
        (serial_number, modelo, empresa_id, 
@@ -76,11 +81,11 @@ class ImpresoraModel {
       [
         serial_number,
         modelo || null,
-        empresa_id || null,
-        precio_copia_bn || 0,
-        precio_copia_color1 || 0,
-        precio_copia_color2 || 0,
-        precio_copia_color3 || 0,
+        empresa_id !== undefined ? empresa_id : null,
+        precioBn,
+        precioC1,
+        precioC2,
+        precioC3,
         tipo_facturacion || "BN_AND_COLOR",
         activa !== undefined ? activa : 1,
       ],
@@ -102,6 +107,11 @@ class ImpresoraModel {
       activa,
     } = impresoraData;
 
+    const precioBn = this._toNumber(precio_copia_bn);
+    const precioC1 = this._toNumber(precio_copia_color1);
+    const precioC2 = this._toNumber(precio_copia_color2);
+    const precioC3 = this._toNumber(precio_copia_color3);
+
     await this.pool.query(
       `UPDATE impresoras SET 
        serial_number = ?, modelo = ?, empresa_id = ?, 
@@ -111,11 +121,11 @@ class ImpresoraModel {
       [
         serial_number,
         modelo,
-        empresa_id,
-        precio_copia_bn,
-        precio_copia_color1,
-        precio_copia_color2,
-        precio_copia_color3,
+        empresa_id !== undefined ? empresa_id : null,
+        precioBn,
+        precioC1,
+        precioC2,
+        precioC3,
         tipo_facturacion,
         activa,
         id,
@@ -156,6 +166,12 @@ class ImpresoraModel {
       [id],
     );
     return rows[0];
+  }
+
+  _toNumber(value, defaultValue = 0) {
+    if (value === null || value === undefined) return defaultValue;
+    const num = parseFloat(value);
+    return isNaN(num) ? defaultValue : num;
   }
 }
 

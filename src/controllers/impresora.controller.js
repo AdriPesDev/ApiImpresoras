@@ -5,7 +5,6 @@ class ImpresoraController {
     this.impresoraModel = new ImpresoraModel(pool);
   }
 
-  // GET /api/impresoras
   getAll = async (req, res, next) => {
     try {
       const filtros = {
@@ -23,7 +22,6 @@ class ImpresoraController {
     }
   };
 
-  // GET /api/impresoras/:id
   getById = async (req, res, next) => {
     try {
       const { id } = req.params;
@@ -39,7 +37,6 @@ class ImpresoraController {
     }
   };
 
-  // GET /api/impresoras/:id/registros
   getRegistros = async (req, res, next) => {
     try {
       const { id } = req.params;
@@ -60,7 +57,6 @@ class ImpresoraController {
     }
   };
 
-  // GET /api/impresoras/:id/contrato
   getContrato = async (req, res, next) => {
     try {
       const { id } = req.params;
@@ -77,7 +73,6 @@ class ImpresoraController {
     }
   };
 
-  // POST /api/impresoras
   create = async (req, res, next) => {
     try {
       const impresoraData = req.body;
@@ -97,26 +92,27 @@ class ImpresoraController {
         });
       }
 
-      // Asegurar que los campos de color existen
-      impresoraData.precio_copia_color1 =
-        impresoraData.precio_copia_color1 ||
-        impresoraData.precio_copia_color ||
-        0;
-      impresoraData.precio_copia_color2 =
-        impresoraData.precio_copia_color2 || 0;
-      impresoraData.precio_copia_color3 =
-        impresoraData.precio_copia_color3 || 0;
-      impresoraData.tipo_facturacion =
-        impresoraData.tipo_facturacion || "BN_AND_COLOR";
+      // Asegurar valores por defecto para colores
+      const data = {
+        ...impresoraData,
+        precio_copia_bn: impresoraData.precio_copia_bn ?? 0.01,
+        precio_copia_color1: impresoraData.precio_copia_color1 ?? 0.03,
+        precio_copia_color2: impresoraData.precio_copia_color2 ?? 0,
+        precio_copia_color3: impresoraData.precio_copia_color3 ?? 0,
+        tipo_facturacion:
+          impresoraData.tipo_facturacion ||
+          this._detectarTipoFacturacion(impresoraData),
+        activa:
+          impresoraData.activa !== undefined ? impresoraData.activa : true,
+      };
 
-      const nuevaImpresora = await this.impresoraModel.create(impresoraData);
+      const nuevaImpresora = await this.impresoraModel.create(data);
       res.status(201).json(nuevaImpresora);
     } catch (error) {
       next(error);
     }
   };
 
-  // PUT /api/impresoras/:id
   update = async (req, res, next) => {
     try {
       const { id } = req.params;
@@ -127,27 +123,25 @@ class ImpresoraController {
         return res.status(404).json({ error: "Impresora no encontrada" });
       }
 
-      // Asegurar que los campos de color existen
-      impresoraData.precio_copia_color1 =
-        impresoraData.precio_copia_color1 ||
-        impresoraData.precio_copia_color ||
-        0;
-      impresoraData.precio_copia_color2 =
-        impresoraData.precio_copia_color2 || 0;
-      impresoraData.precio_copia_color3 =
-        impresoraData.precio_copia_color3 || 0;
+      const data = {
+        ...impresoraData,
+        precio_copia_color1:
+          impresoraData.precio_copia_color1 ?? impresora.precio_copia_color1,
+        precio_copia_color2:
+          impresoraData.precio_copia_color2 ?? impresora.precio_copia_color2,
+        precio_copia_color3:
+          impresoraData.precio_copia_color3 ?? impresora.precio_copia_color3,
+        tipo_facturacion:
+          impresoraData.tipo_facturacion || impresora.tipo_facturacion,
+      };
 
-      const impresoraActualizada = await this.impresoraModel.update(
-        id,
-        impresoraData,
-      );
+      const impresoraActualizada = await this.impresoraModel.update(id, data);
       res.json(impresoraActualizada);
     } catch (error) {
       next(error);
     }
   };
 
-  // DELETE /api/impresoras/:id
   delete = async (req, res, next) => {
     try {
       const { id } = req.params;
@@ -167,6 +161,19 @@ class ImpresoraController {
       next(error);
     }
   };
+
+  _detectarTipoFacturacion(data) {
+    const tieneColor2 = (data.precio_copia_color2 ?? 0) > 0;
+    const tieneColor3 = (data.precio_copia_color3 ?? 0) > 0;
+    const tieneColor1 = (data.precio_copia_color1 ?? 0) > 0;
+    const tieneBn = (data.precio_copia_bn ?? 0) > 0;
+
+    if (tieneColor2 || tieneColor3) return "MULTICOLOR";
+    if (tieneColor1 && tieneBn) return "BN_AND_COLOR";
+    if (tieneColor1) return "COLOR_ONLY";
+    if (tieneBn) return "BN_ONLY";
+    return "BN_AND_COLOR";
+  }
 }
 
 module.exports = ImpresoraController;
