@@ -1,3 +1,6 @@
+const RegistroModel = require("../models/registro.model");
+const ImpresoraModel = require("../models/impresora.model");
+
 class RegistroController {
   constructor(pool) {
     this.registroModel = new RegistroModel(pool);
