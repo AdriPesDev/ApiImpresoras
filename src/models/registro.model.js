@@ -81,8 +81,8 @@ class RegistroModel {
 
     const [result] = await this.pool.query(
       `INSERT INTO registros_contadores 
-     (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
-     VALUES (?, ?, ?, ?, ?, ?)`,
+       (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         impresora_id,
         copias_bn_total || 0,
@@ -105,7 +105,8 @@ class RegistroModel {
         r.copias_color1_total !== undefined
           ? r.copias_color1_total
           : r.copias_color_total || 0;
-      // Formatear fecha
+
+      // Formatear fecha correctamente
       const fechaFormateada = formatMySQLDate(r.fecha_lectura || new Date());
 
       return [
@@ -114,7 +115,7 @@ class RegistroModel {
         color1,
         r.copias_color2_total || 0,
         r.copias_color3_total || 0,
-        fechaFormateada,
+        fechaFormateada, // Usar fecha formateada, no el objeto Date directamente
       ];
     });
 
@@ -123,40 +124,8 @@ class RegistroModel {
 
     const [result] = await this.pool.query(
       `INSERT INTO registros_contadores 
-     (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
-     VALUES ${placeholders}`,
-      flatValues,
-    );
-
-    return { count: result.affectedRows };
-  }
-
-  async createBulk(registros) {
-    if (!registros.length) return { count: 0 };
-
-    const values = registros.map((r) => {
-      // Normalizar campos de color
-      const color1 =
-        r.copias_color1_total !== undefined
-          ? r.copias_color1_total
-          : r.copias_color_total || 0;
-      return [
-        r.impresora_id,
-        r.copias_bn_total || 0,
-        color1,
-        r.copias_color2_total || 0,
-        r.copias_color3_total || 0,
-        r.fecha_lectura || new Date(),
-      ];
-    });
-
-    const placeholders = values.map(() => "(?, ?, ?, ?, ?, ?)").join(",");
-    const flatValues = values.flat();
-
-    const [result] = await this.pool.query(
-      `INSERT INTO registros_contadores 
-     (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
-     VALUES ${placeholders}`,
+       (impresora_id, copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura) 
+       VALUES ${placeholders}`,
       flatValues,
     );
 
