@@ -1,5 +1,5 @@
 // src/controllers/importaciones.controller.js
-const ImportacionModel = require("../models/importacion.model");
+const ImportacionModel = require("../models/importaciones.model");
 
 class ImportacionesController {
   constructor(pool) {
