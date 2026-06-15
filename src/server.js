@@ -9,35 +9,37 @@ dotenv.config();
 
 const { pool, testConnection } = require('./config/database');
 const { limiter, writeLimiter } = require('./middleware/rateLimit.middleware');
-const authMiddleware = require('./middleware/auth.middleware');
+const { jwtMiddleware, requireRole, apiKeyMiddleware } = require('./middleware/auth.middleware');
 const errorMiddleware = require('./middleware/error.middleware');
 
 // Controllers
-const EmpresaController = require('./controllers/empresa.controller');
-const ImpresoraController = require('./controllers/impresora.controller');
-const RegistroController = require('./controllers/registro.controller');
-const ConsumoController = require('./controllers/consumo.controller');
-const DashboardController = require('./controllers/dashboard.controller');
-const ContratoController = require('./controllers/contrato.controller');
+const AuthController         = require('./controllers/auth.controller');
+const EmpresaController      = require('./controllers/empresa.controller');
+const ImpresoraController    = require('./controllers/impresora.controller');
+const RegistroController     = require('./controllers/registro.controller');
+const ConsumoController      = require('./controllers/consumo.controller');
+const DashboardController    = require('./controllers/dashboard.controller');
+const ContratoController     = require('./controllers/contrato.controller');
 const ImportacionesController = require('./controllers/importaciones.controller');
-const FacturacionController = require('./controllers/facturacion.controller');
-const DolibarrController = require('./controllers/dolibarr.controller');
+const FacturacionController  = require('./controllers/facturacion.controller');
+const DolibarrController     = require('./controllers/dolibarr.controller');
 
 // Route factories
-const createEmpresaRoutes = require('./routes/empresa.routes');
-const createImpresoraRoutes = require('./routes/impresora.routes');
-const createRegistroRoutes = require('./routes/registro.routes');
-const createConsumoRoutes = require('./routes/consumo.routes');
-const createDashboardRoutes = require('./routes/dashboard.routes');
-const createContratoRoutes = require('./routes/contrato.routes');
+const createAuthRoutes          = require('./routes/auth.routes');
+const createEmpresaRoutes       = require('./routes/empresa.routes');
+const createImpresoraRoutes     = require('./routes/impresora.routes');
+const createRegistroRoutes      = require('./routes/registro.routes');
+const createConsumoRoutes       = require('./routes/consumo.routes');
+const createDashboardRoutes     = require('./routes/dashboard.routes');
+const createContratoRoutes      = require('./routes/contrato.routes');
 const createImportacionesRoutes = require('./routes/importaciones.routes');
-const createFacturacionRoutes = require('./routes/facturacion.routes');
-const createDolibarrRoutes = require('./routes/dolibarr.routes');
+const createFacturacionRoutes   = require('./routes/facturacion.routes');
+const createDolibarrRoutes      = require('./routes/dolibarr.routes');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 
-// Global middleware
+// ── Global middleware ──────────────────────────────
 app.use(helmet());
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
@@ -48,16 +50,11 @@ app.use(morgan('dev'));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 
-// Rate limiting
+// Rate limiting (descomentar en producción)
 // app.use('/api/', limiter);
 // app.use('/api/facturacion/ejecutar', writeLimiter);
 
-// Authentication (production only)
-if (process.env.NODE_ENV === 'production') {
-  app.use('/api/', authMiddleware);
-}
-
-// Health check
+// ── Health check (público) ─────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'OK',
@@ -67,18 +64,26 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Instantiate controllers
-const empresaController      = new EmpresaController(pool);
-const impresoraController    = new ImpresoraController(pool);
-const registroController     = new RegistroController(pool);
-const consumoController      = new ConsumoController(pool);
-const dashboardController    = new DashboardController(pool);
-const contratoController     = new ContratoController(pool);
+// ── Instantiate controllers ────────────────────────
+const authController          = new AuthController(pool);
+const empresaController       = new EmpresaController(pool);
+const impresoraController     = new ImpresoraController(pool);
+const registroController      = new RegistroController(pool);
+const consumoController       = new ConsumoController(pool);
+const dashboardController     = new DashboardController(pool);
+const contratoController      = new ContratoController(pool);
 const importacionesController = new ImportacionesController(pool);
-const facturacionController  = new FacturacionController(pool);
-const dolibarrController     = new DolibarrController();
+const facturacionController   = new FacturacionController(pool);
+const dolibarrController      = new DolibarrController();
 
-// Mount routes
+// ── Rutas públicas (sin auth) ──────────────────────
+app.use('/api/auth', createAuthRoutes(authController, jwtMiddleware));
+
+// ── Rutas protegidas (requieren JWT o API key) ─────
+// En development puedes desactivar auth comentando la siguiente línea:
+app.use('/api', apiKeyMiddleware);
+
+// Rutas accesibles para admin y viewer
 app.use('/api/empresas',      createEmpresaRoutes(empresaController));
 app.use('/api/impresoras',    createImpresoraRoutes(impresoraController));
 app.use('/api/registros',     createRegistroRoutes(registroController));
@@ -86,15 +91,18 @@ app.use('/api/consumos',      createConsumoRoutes(consumoController));
 app.use('/api/dashboard',     createDashboardRoutes(dashboardController));
 app.use('/api/contratos',     createContratoRoutes(contratoController));
 app.use('/api/importaciones', createImportacionesRoutes(importacionesController));
-app.use('/api/facturacion',   createFacturacionRoutes(facturacionController));
-app.use('/api/dolibarr',      createDolibarrRoutes(dolibarrController));
 
-// Root
+// Rutas solo admin
+app.use('/api/facturacion',   requireRole('admin'), createFacturacionRoutes(facturacionController));
+app.use('/api/dolibarr',      requireRole('admin'), createDolibarrRoutes(dolibarrController));
+
+// ── Root ───────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     message: 'API Control de Impresoras',
-    version: '2.0.0',
+    version: '2.1.0',
     endpoints: {
+      auth:          '/api/auth/login',
       empresas:      '/api/empresas',
       impresoras:    '/api/impresoras',
       contratos:     '/api/contratos',
@@ -108,15 +116,15 @@ app.get('/', (req, res) => {
   });
 });
 
-// 404
+// ── 404 ────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint no encontrado' });
 });
 
-// Error handler
+// ── Error handler ──────────────────────────────────
 app.use(errorMiddleware);
 
-// Start
+// ── Start ──────────────────────────────────────────
 const startServer = async () => {
   const dbConnected = await testConnection();
 

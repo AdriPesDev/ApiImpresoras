@@ -9,7 +9,8 @@
     "dev:debug": "nodemon --inspect src/server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "eslint src/",
-    "db:migrate": "node scripts/migrate.js"
+    "db:migrate": "node scripts/migrate.js",
+    "create-user": "node scripts/create-user.js"
   },
   "keywords": [
     "api",
@@ -20,6 +21,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "body-parser": "^2.2.2",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
@@ -27,6 +29,7 @@
     "express-rate-limit": "^8.3.1",
     "express-validator": "^7.3.1",
     "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.1",
     "mysql2": "^3.19.1"
   },
