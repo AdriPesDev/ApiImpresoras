@@ -1,24 +1,27 @@
-const express = require("express");
-const router = express.Router();
+const express = require('express');
 
-module.exports = (controller) => {
-  // GET /api/contratos
-  router.get("/", controller.getAll);
+module.exports = function createContratoRoutes(controller) {
+  const router = express.Router();
 
-  // GET /api/contratos/:id
-  router.get("/:id", controller.getById);
+  // Collection
+  router.get('/',    controller.getAll);
+  router.post('/',   controller.create);
 
-  // GET /api/contratos/impresora/:impresoraId/activo
-  router.get("/impresora/:impresoraId/activo", controller.getActivoByImpresora);
+  // Single contract
+  router.get('/:id',           controller.getById);
+  router.put('/:id',           controller.update);
+  router.patch('/:id/activo',  controller.toggleActivo);
+  router.delete('/:id',        controller.delete);
 
-  // POST /api/contratos
-  router.post("/", controller.create);
+  // Sub-resource: impresoras
+  router.post('/:id/impresoras',              controller.addImpresora);
+  router.put('/:id/impresoras/:ci_id',        controller.updateImpresora);
+  router.delete('/:id/impresoras/:ci_id',     controller.removeImpresora);
 
-  // PUT /api/contratos/:id
-  router.put("/:id", controller.update);
-
-  // DELETE /api/contratos/:id
-  router.delete("/:id", controller.delete);
+  // Sub-resource: lineas-fijas
+  router.post('/:id/lineas-fijas',            controller.addLineaFija);
+  router.put('/:id/lineas-fijas/:lf_id',      controller.updateLineaFija);
+  router.delete('/:id/lineas-fijas/:lf_id',   controller.removeLineaFija);
 
   return router;
 };

@@ -3,95 +3,84 @@ class EmpresaModel {
     this.pool = pool;
   }
 
-  // Obtener todas las empresas
-  async findAll(activo = null) {
-    let query = "SELECT * FROM empresas";
+  async findAll(filtros = {}) {
+    let query = `
+      SELECT e.*, COUNT(DISTINCT i.id) AS num_impresoras
+      FROM empresas e
+      LEFT JOIN impresoras i ON i.empresa_id = e.id AND i.activa = TRUE
+      WHERE 1=1
+    `;
     const params = [];
 
-    if (activo !== null) {
-      query += " WHERE activo = ?";
-      params.push(activo);
+    if (filtros.activo !== null && filtros.activo !== undefined) {
+      query += ' AND e.activo = ?';
+      params.push(filtros.activo);
+    }
+    if (filtros.buscar) {
+      query += ' AND (e.nombre_oficial LIKE ? OR e.cif LIKE ?)';
+      params.push(`%${filtros.buscar}%`, `%${filtros.buscar}%`);
     }
 
-    query += " ORDER BY nombre_oficial";
-
+    query += ' GROUP BY e.id ORDER BY e.nombre_oficial';
     const [rows] = await this.pool.query(query, params);
     return rows;
   }
 
-  // Obtener empresa por ID
   async findById(id) {
-    const [rows] = await this.pool.query(
-      "SELECT * FROM empresas WHERE id = ?",
-      [id],
-    );
+    const [rows] = await this.pool.query('SELECT * FROM empresas WHERE id = ?', [id]);
     return rows[0];
   }
 
-  // Obtener empresa por dolibarr_id
   async findByDolibarrId(dolibarrId) {
     const [rows] = await this.pool.query(
-      "SELECT * FROM empresas WHERE dolibarr_id = ?",
+      'SELECT * FROM empresas WHERE dolibarr_id = ?',
       [dolibarrId],
     );
     return rows[0];
   }
 
-  // Crear empresa
-  async create(empresaData) {
-    const { dolibarr_id, nombre_oficial, cif, activo } = empresaData;
-
+  async create(data) {
     const [result] = await this.pool.query(
-      "INSERT INTO empresas (dolibarr_id, nombre_oficial, cif, activo) VALUES (?, ?, ?, ?)",
-      [
-        dolibarr_id,
-        nombre_oficial,
-        cif || null,
-        activo !== undefined ? activo : 1,
-      ],
+      'INSERT INTO empresas (dolibarr_id, nombre_oficial, cif, activo) VALUES (?, ?, ?, ?)',
+      [data.dolibarr_id, data.nombre_oficial, data.cif ?? null, data.activo ?? true],
     );
-
     return this.findById(result.insertId);
   }
 
-  // Actualizar empresa
-  async update(id, empresaData) {
-    const { dolibarr_id, nombre_oficial, cif, activo } = empresaData;
+  async update(id, data) {
+    const allowed = ['dolibarr_id', 'nombre_oficial', 'cif', 'activo'];
+    const fields = [];
+    const params = [];
 
-    await this.pool.query(
-      "UPDATE empresas SET dolibarr_id = ?, nombre_oficial = ?, cif = ?, activo = ? WHERE id = ?",
-      [dolibarr_id, nombre_oficial, cif, activo, id],
-    );
+    for (const key of allowed) {
+      if (data[key] !== undefined) {
+        fields.push(`${key} = ?`);
+        params.push(data[key]);
+      }
+    }
+
+    if (fields.length) {
+      params.push(id);
+      await this.pool.query(`UPDATE empresas SET ${fields.join(', ')} WHERE id = ?`, params);
+    }
 
     return this.findById(id);
   }
 
-  // Eliminar empresa
   async delete(id) {
-    const [result] = await this.pool.query(
-      "DELETE FROM empresas WHERE id = ?",
-      [id],
-    );
+    const [result] = await this.pool.query('DELETE FROM empresas WHERE id = ?', [id]);
     return result.affectedRows > 0;
   }
 
-  // Obtener estadísticas de empresa
   async getStats(id) {
     const [rows] = await this.pool.query(
-      `
-      SELECT 
-        e.*,
-        (SELECT COUNT(*) FROM impresoras WHERE empresa_id = e.id) as total_impresoras,
-        (SELECT COUNT(*) FROM impresoras WHERE empresa_id = e.id AND activa = 1) as impresoras_activas,
-        (SELECT SUM(total_facturar) FROM consumos_mensuales c 
-         JOIN impresoras i ON c.impresora_id = i.id 
-         WHERE i.empresa_id = e.id AND c.facturado = 0) as pendiente_facturar
-      FROM empresas e
-      WHERE e.id = ?
-    `,
+      `SELECT e.*,
+              (SELECT COUNT(*) FROM impresoras WHERE empresa_id = e.id) AS total_impresoras,
+              (SELECT COUNT(*) FROM impresoras WHERE empresa_id = e.id AND activa = TRUE) AS impresoras_activas
+       FROM empresas e
+       WHERE e.id = ?`,
       [id],
     );
-
     return rows[0];
   }
 }
