@@ -37,6 +37,14 @@ class ContratoModel {
         " AND c.fecha_inicio <= ? AND (c.fecha_fin IS NULL OR c.fecha_fin >= ?)";
       params.push(filtros.fecha, filtros.fecha);
     }
+    if (filtros.empresa_id) {
+      query += " AND c.empresa_id = ?";
+      params.push(filtros.empresa_id);
+    }
+    if (filtros.buscar) {
+      query += " AND (c.numero_contrato LIKE ? OR e.nombre_oficial LIKE ?)";
+      params.push(`%${filtros.buscar}%`, `%${filtros.buscar}%`);
+    }
 
     query += " ORDER BY c.created_at DESC";
     const [rows] = await this.pool.query(query, params);
@@ -54,6 +62,189 @@ class ContratoModel {
        LEFT JOIN impresoras i ON c.impresora_id = i.id
        WHERE c.id = ?`,
       [id],
+    );
+    if (!rows[0]) return null;
+
+    const contrato = rows[0];
+    contrato.impresoras = await this.getImpresoras(id);
+    contrato.lineas_fijas = await this.getLineasFijas(id);
+    return contrato;
+  }
+
+  async getImpresoras(contrato_id) {
+    const [rows] = await this.pool.query(
+      `SELECT ci.*, i.serial_number, i.modelo,
+              COALESCE(ei.nombre_oficial, ec.nombre_oficial) AS empresa_nombre
+       FROM contrato_impresoras ci
+       INNER JOIN impresoras i ON i.id = ci.impresora_id
+       LEFT JOIN empresas ei ON ei.id = ci.empresa_id
+       LEFT JOIN contratos c ON c.id = ci.contrato_id
+       LEFT JOIN empresas ec ON ec.id = c.empresa_id
+       WHERE ci.contrato_id = ?
+       ORDER BY ci.id`,
+      [contrato_id],
+    );
+    return rows;
+  }
+
+  async getLineasFijas(contrato_id) {
+    const [rows] = await this.pool.query(
+      `SELECT * FROM contrato_lineas_fijas
+       WHERE contrato_id = ? AND activo = TRUE
+       ORDER BY orden, id`,
+      [contrato_id],
+    );
+    return rows;
+  }
+
+  // Used by the billing engine to get active contract prices for a serial
+  async findActivoPorSerial(serial) {
+    const [rows] = await this.pool.query(
+      `SELECT ci.precio_bn, ci.precio_color1, ci.precio_color2, ci.precio_color3,
+              ci.copias_bn_incluidas, ci.copias_c1_incluidas,
+              ci.copias_c2_incluidas, ci.copias_c3_incluidas,
+              ci.precio_minimo_mensual, c.numero_contrato
+       FROM contrato_impresoras ci
+       INNER JOIN contratos c ON c.id = ci.contrato_id
+       INNER JOIN impresoras i ON i.id = ci.impresora_id
+       WHERE i.serial_number = ?
+         AND ci.activo = TRUE
+         AND c.activo = TRUE
+         AND c.fecha_inicio <= CURDATE()
+         AND (c.fecha_fin IS NULL OR c.fecha_fin >= CURDATE())
+       ORDER BY c.fecha_inicio DESC
+       LIMIT 1`,
+      [serial],
+    );
+    return rows[0] || null;
+  }
+
+  async create(data) {
+    const [result] = await this.pool.query(
+      `INSERT INTO contratos
+         (numero_contrato, empresa_id, factura_separada,
+          descuento_copias_fijo_bn, descuento_copias_fijo_c1,
+          descuento_copias_fijo_c2, descuento_copias_fijo_c3,
+          descuento_copias_pct_bn, descuento_copias_pct_c1,
+          descuento_copias_pct_c2, descuento_copias_pct_c3,
+          descuento_pct_confirmado,
+          fecha_inicio, fecha_fin, activo, notas)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        data.numero_contrato,
+        data.empresa_id,
+        data.factura_separada ?? false,
+        data.descuento_copias_fijo_bn ?? 0,
+        data.descuento_copias_fijo_c1 ?? 0,
+        data.descuento_copias_fijo_c2 ?? 0,
+        data.descuento_copias_fijo_c3 ?? 0,
+        data.descuento_copias_pct_bn ?? 0,
+        data.descuento_copias_pct_c1 ?? 0,
+        data.descuento_copias_pct_c2 ?? 0,
+        data.descuento_copias_pct_c3 ?? 0,
+        data.descuento_pct_confirmado ?? false,
+        data.fecha_inicio,
+        data.fecha_fin ?? null,
+        data.activo ?? true,
+        data.notas ?? null,
+      ],
+    );
+
+    const contratoId = result.insertId;
+
+    if (data.impresoras?.length) {
+      await this._saveImpresoras(contratoId, data.impresoras);
+    }
+    if (data.lineas_fijas?.length) {
+      await this._saveLineasFijas(contratoId, data.lineas_fijas);
+    }
+
+    return this.findById(contratoId);
+  }
+
+  async update(id, data) {
+    const allowed = [
+      "numero_contrato",
+      "empresa_id",
+      "factura_separada",
+      "descuento_copias_fijo_bn",
+      "descuento_copias_fijo_c1",
+      "descuento_copias_fijo_c2",
+      "descuento_copias_fijo_c3",
+      "descuento_copias_pct_bn",
+      "descuento_copias_pct_c1",
+      "descuento_copias_pct_c2",
+      "descuento_copias_pct_c3",
+      "descuento_pct_confirmado",
+      "fecha_inicio",
+      "fecha_fin",
+      "activo",
+      "notas",
+    ];
+    const fields = [];
+    const params = [];
+
+    for (const key of allowed) {
+      if (data[key] !== undefined) {
+        fields.push(`${key} = ?`);
+        params.push(data[key]);
+      }
+    }
+
+    if (fields.length) {
+      params.push(id);
+      await this.pool.query(
+        `UPDATE contratos SET ${fields.join(", ")} WHERE id = ?`,
+        params,
+      );
+    }
+
+    if (data.impresoras !== undefined) {
+      await this.pool.query(
+        "DELETE FROM contrato_impresoras WHERE contrato_id = ?",
+        [id],
+      );
+      if (data.impresoras.length) {
+        await this._saveImpresoras(id, data.impresoras);
+      }
+    }
+
+    if (data.lineas_fijas !== undefined) {
+      await this.pool.query(
+        "DELETE FROM contrato_lineas_fijas WHERE contrato_id = ?",
+        [id],
+      );
+      if (data.lineas_fijas.length) {
+        await this._saveLineasFijas(id, data.lineas_fijas);
+      }
+    }
+
+    return this.findById(id);
+  }
+
+  async toggleActivo(id, activo) {
+    await this.pool.query("UPDATE contratos SET activo = ? WHERE id = ?", [
+      activo,
+      id,
+    ]);
+    return this.findById(id);
+  }
+
+  async delete(id) {
+    const [result] = await this.pool.query(
+      "DELETE FROM contratos WHERE id = ?",
+      [id],
+    );
+    return result.affectedRows > 0;
+  }
+
+  // ── Sub-resource: impresoras ──────────────────────────────
+
+  async addImpresora(contrato_id, data) {
+    const insertId = await this._saveImpresoraRow(contrato_id, data);
+    const [rows] = await this.pool.query(
+      "SELECT * FROM contrato_impresoras WHERE id = ?",
+      [insertId],
     );
     return rows[0];
   }
@@ -79,10 +270,8 @@ class ContratoModel {
 
   async findActivoByImpresora(impresora_id) {
     const [rows] = await this.pool.query(
-      `SELECT * FROM contratos_impresoras 
-       WHERE impresora_id = ? AND activo = 1 
-       ORDER BY created_at DESC LIMIT 1`,
-      [impresora_id],
+      "SELECT * FROM contrato_impresoras WHERE id = ?",
+      [ci_id],
     );
     return rows[0];
   }
@@ -133,8 +322,7 @@ class ContratoModel {
         activo,
       ],
     );
-
-    return this.findById(result.insertId);
+    return rows[0];
   }
 
   async update(id, contratoData) {
@@ -174,14 +362,13 @@ class ContratoModel {
       `UPDATE contratos_impresoras SET ${updates.join(", ")} WHERE id = ?`,
       params,
     );
-
-    return this.findById(id);
+    return rows[0];
   }
 
-  async delete(id) {
+  async removeLineaFija(lf_id) {
     const [result] = await this.pool.query(
-      "DELETE FROM contratos_impresoras WHERE id = ?",
-      [id],
+      "DELETE FROM contrato_lineas_fijas WHERE id = ?",
+      [lf_id],
     );
     return result.affectedRows > 0;
   }

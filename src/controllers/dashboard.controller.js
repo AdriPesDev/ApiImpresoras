@@ -16,7 +16,7 @@ class DashboardController {
           (SELECT IFNULL(SUM(total_facturar), 0) FROM consumos_mensuales WHERE facturado = 0) as pendiente_facturar,
           (SELECT IFNULL(SUM(total_facturar), 0) FROM consumos_mensuales 
            WHERE periodo = DATE_FORMAT(NOW(), '%Y-%m') AND facturado = 1) as facturado_mes,
-          (SELECT IFNULL(SUM(copias_bn_mes + copias_color_mes), 0) FROM consumos_mensuales 
+          (SELECT IFNULL(SUM(copias_bn_mes + copias_color1_mes), 0) FROM consumos_mensuales
            WHERE periodo = DATE_FORMAT(NOW(), '%Y-%m')) as copias_mes
       `);
 
@@ -96,7 +96,7 @@ class DashboardController {
         SELECT 
           periodo,
           SUM(copias_bn_mes) as total_bn,
-          SUM(copias_color_mes) as total_color,
+          SUM(copias_color1_mes) as total_color,
           SUM(total_facturar) as total_facturado
         FROM consumos_mensuales
         WHERE periodo >= DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m')
@@ -119,7 +119,7 @@ class DashboardController {
           i.serial_number,
           i.modelo,
           e.nombre_oficial as empresa,
-          SUM(c.copias_bn_mes + c.copias_color_mes) as total_copias,
+          SUM(c.copias_bn_mes + c.copias_color1_mes) as total_copias,
           SUM(c.total_facturar) as total_facturado
         FROM consumos_mensuales c
         JOIN impresoras i ON c.impresora_id = i.id

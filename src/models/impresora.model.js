@@ -27,6 +27,11 @@ class ImpresoraModel {
       params.push(`%${filtros.modelo}%`);
     }
 
+    if (filtros.buscar) {
+      query += " AND (i.serial_number LIKE ? OR i.modelo LIKE ? OR e.nombre_oficial LIKE ?)";
+      params.push(`%${filtros.buscar}%`, `%${filtros.buscar}%`, `%${filtros.buscar}%`);
+    }
+
     query += " ORDER BY i.serial_number";
 
     const [rows] = await this.pool.query(query, params);
@@ -81,13 +86,13 @@ class ImpresoraModel {
       [
         serial_number,
         modelo || null,
-        empresa_id !== undefined ? empresa_id : null,
+        empresa_id === undefined ? null : empresa_id,
         precioBn,
         precioC1,
         precioC2,
         precioC3,
         tipo_facturacion || "BN_AND_COLOR",
-        activa !== undefined ? activa : 1,
+        activa === undefined ? 1 : activa,
       ],
     );
 
@@ -121,7 +126,7 @@ class ImpresoraModel {
       [
         serial_number,
         modelo,
-        empresa_id !== undefined ? empresa_id : null,
+        empresa_id === undefined ? null : empresa_id,
         precioBn,
         precioC1,
         precioC2,
@@ -158,11 +163,19 @@ class ImpresoraModel {
 
   async getContratoActivo(id) {
     const [rows] = await this.pool.query(
-      `
-      SELECT * FROM contratos_impresoras 
-      WHERE impresora_id = ? AND activo = 1 
-      LIMIT 1
-    `,
+      `SELECT c.*, ci.precio_bn, ci.precio_color1, ci.precio_color2, ci.precio_color3,
+              ci.copias_bn_incluidas, ci.copias_c1_incluidas,
+              ci.copias_c2_incluidas, ci.copias_c3_incluidas,
+              ci.precio_minimo_mensual
+       FROM contrato_impresoras ci
+       INNER JOIN contratos c ON c.id = ci.contrato_id
+       WHERE ci.impresora_id = ?
+         AND ci.activo = TRUE
+         AND c.activo = TRUE
+         AND c.fecha_inicio <= CURDATE()
+         AND (c.fecha_fin IS NULL OR c.fecha_fin >= CURDATE())
+       ORDER BY c.fecha_inicio DESC
+       LIMIT 1`,
       [id],
     );
     return rows[0];
@@ -170,8 +183,8 @@ class ImpresoraModel {
 
   _toNumber(value, defaultValue = 0) {
     if (value === null || value === undefined) return defaultValue;
-    const num = parseFloat(value);
-    return isNaN(num) ? defaultValue : num;
+    const num = Number.parseFloat(value);
+    return Number.isNaN(num) ? defaultValue : num;
   }
 }
 

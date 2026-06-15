@@ -8,10 +8,11 @@ class EmpresaController {
   // GET /api/empresas
   getAll = async (req, res, next) => {
     try {
-      const { activo } = req.query;
-      const activoFilter = activo !== undefined ? activo === "true" : null;
-
-      const empresas = await this.empresaModel.findAll(activoFilter);
+      const filtros = {
+        activo: req.query.activo === undefined ? null : req.query.activo === 'true',
+        buscar: req.query.buscar || undefined,
+      };
+      const empresas = await this.empresaModel.findAll(filtros);
       res.json(empresas);
     } catch (error) {
       next(error);
