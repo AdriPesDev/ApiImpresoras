@@ -123,8 +123,15 @@ class ImpresoraController {
         return res.status(404).json({ error: "Impresora no encontrada" });
       }
 
+      // El modelo hace un UPDATE de fila completa, así que cada columna debe ir
+      // definida. Rellenamos desde el registro existente cualquier campo ausente
+      // en el body (?? respeta falsy válidos como activa:false o precio 0).
       const data = {
-        ...impresoraData,
+        serial_number: impresoraData.serial_number ?? impresora.serial_number,
+        modelo: impresoraData.modelo ?? impresora.modelo,
+        empresa_id: impresoraData.empresa_id ?? impresora.empresa_id,
+        precio_copia_bn:
+          impresoraData.precio_copia_bn ?? impresora.precio_copia_bn,
         precio_copia_color1:
           impresoraData.precio_copia_color1 ?? impresora.precio_copia_color1,
         precio_copia_color2:
@@ -132,7 +139,8 @@ class ImpresoraController {
         precio_copia_color3:
           impresoraData.precio_copia_color3 ?? impresora.precio_copia_color3,
         tipo_facturacion:
-          impresoraData.tipo_facturacion || impresora.tipo_facturacion,
+          impresoraData.tipo_facturacion ?? impresora.tipo_facturacion,
+        activa: impresoraData.activa ?? impresora.activa,
       };
 
       const impresoraActualizada = await this.impresoraModel.update(id, data);
