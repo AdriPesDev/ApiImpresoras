@@ -6,61 +6,61 @@ class ContratoModel {
 
   async findAll(filtros = {}) {
     let query = `
-      SELECT c.*, 
-             e.nombre_oficial as empresa_nombre,
-             i.serial_number as impresora_serial,
-             i.modelo as impresora_modelo
-      FROM contratos_impresoras c
-      LEFT JOIN empresas e ON c.empresa_id = e.id
-      LEFT JOIN impresoras i ON c.impresora_id = i.id
+      SELECT ci.*,
+             con.id AS contrato_id,
+             e.nombre_oficial AS empresa_nombre,
+             i.serial_number AS impresora_serial,
+             i.modelo AS impresora_modelo
+      FROM contratos_impresoras ci
+      LEFT JOIN contratos con ON con.numero_contrato = ci.numero_contrato
+      LEFT JOIN empresas e ON ci.empresa_id = e.id
+      LEFT JOIN impresoras i ON ci.impresora_id = i.id
       WHERE 1=1
     `;
     const params = [];
 
     if (filtros.impresora_id) {
-      query += " AND c.impresora_id = ?";
+      query += " AND ci.impresora_id = ?";
       params.push(filtros.impresora_id);
     }
 
     if (filtros.empresa_id) {
-      query += " AND c.empresa_id = ?";
+      query += " AND ci.empresa_id = ?";
       params.push(filtros.empresa_id);
     }
 
     if (filtros.activo !== undefined) {
-      query += " AND c.activo = ?";
+      query += " AND ci.activo = ?";
       params.push(filtros.activo ? 1 : 0);
     }
 
     if (filtros.fecha) {
-      query +=
-        " AND c.fecha_inicio <= ? AND (c.fecha_fin IS NULL OR c.fecha_fin >= ?)";
+      query += " AND ci.fecha_inicio <= ? AND (ci.fecha_fin IS NULL OR ci.fecha_fin >= ?)";
       params.push(filtros.fecha, filtros.fecha);
     }
-    if (filtros.empresa_id) {
-      query += " AND c.empresa_id = ?";
-      params.push(filtros.empresa_id);
-    }
+
     if (filtros.buscar) {
-      query += " AND (c.numero_contrato LIKE ? OR e.nombre_oficial LIKE ?)";
+      query += " AND (ci.numero_contrato LIKE ? OR e.nombre_oficial LIKE ?)";
       params.push(`%${filtros.buscar}%`, `%${filtros.buscar}%`);
     }
 
-    query += " ORDER BY c.created_at DESC";
+    query += " ORDER BY ci.created_at DESC";
     const [rows] = await this.pool.query(query, params);
     return rows;
   }
 
   async findById(id) {
     const [rows] = await this.pool.query(
-      `SELECT c.*, 
-              e.nombre_oficial as empresa_nombre,
-              i.serial_number as impresora_serial,
-              i.modelo as impresora_modelo
-       FROM contratos_impresoras c
-       LEFT JOIN empresas e ON c.empresa_id = e.id
-       LEFT JOIN impresoras i ON c.impresora_id = i.id
-       WHERE c.id = ?`,
+      `SELECT ci.*,
+              con.id AS contrato_id,
+              e.nombre_oficial AS empresa_nombre,
+              i.serial_number AS impresora_serial,
+              i.modelo AS impresora_modelo
+       FROM contratos_impresoras ci
+       LEFT JOIN contratos con ON con.numero_contrato = ci.numero_contrato
+       LEFT JOIN empresas e ON ci.empresa_id = e.id
+       LEFT JOIN impresoras i ON ci.impresora_id = i.id
+       WHERE ci.id = ?`,
       [id],
     );
     if (!rows[0]) return null;
@@ -232,7 +232,7 @@ class ContratoModel {
 
   async delete(id) {
     const [result] = await this.pool.query(
-      "DELETE FROM contratos WHERE id = ?",
+      "DELETE FROM contratos_impresoras WHERE id = ?",
       [id],
     );
     return result.affectedRows > 0;
@@ -270,8 +270,8 @@ class ContratoModel {
 
   async findActivoByImpresora(impresora_id) {
     const [rows] = await this.pool.query(
-      "SELECT * FROM contrato_impresoras WHERE id = ?",
-      [ci_id],
+      "SELECT * FROM contratos_impresoras WHERE impresora_id = ? AND activo = 1",
+      [impresora_id],
     );
     return rows[0];
   }
@@ -295,6 +295,19 @@ class ContratoModel {
       fecha_fin = null,
       activo = 1,
     } = contratoData;
+
+    // Garantizar que existe un registro en `contratos` para este numero_contrato
+    const [existing] = await this.pool.query(
+      "SELECT id FROM contratos WHERE numero_contrato = ?",
+      [numero_contrato],
+    );
+    if (existing.length === 0) {
+      await this.pool.query(
+        `INSERT INTO contratos (numero_contrato, empresa_id, fecha_inicio, fecha_fin, activo)
+         VALUES (?, ?, ?, ?, ?)`,
+        [numero_contrato, empresa_id, fecha_inicio, fecha_fin ?? null, activo],
+      );
+    }
 
     const [result] = await this.pool.query(
       `INSERT INTO contratos_impresoras (
@@ -322,7 +335,7 @@ class ContratoModel {
         activo,
       ],
     );
-    return rows[0];
+    return this.findById(result.insertId);
   }
 
   async update(id, contratoData) {
@@ -362,7 +375,7 @@ class ContratoModel {
       `UPDATE contratos_impresoras SET ${updates.join(", ")} WHERE id = ?`,
       params,
     );
-    return rows[0];
+    return this.findById(id);
   }
 
   async removeLineaFija(lf_id) {
