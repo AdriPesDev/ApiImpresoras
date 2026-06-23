@@ -415,18 +415,30 @@ class FacturacionService {
     const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(resultados, periodo);
 
     for (const factura of facturas) {
+      let idFactura = null;
+      // 1) Crear la factura en Dolibarr
       try {
         const resp = await this.dolibarr.crearFactura(factura.dolibarr_payload);
-        const idFactura = typeof resp === 'number' ? resp : resp?.id;
+        idFactura = typeof resp === 'number' ? resp : resp?.id;
         factura.estado              = 'creada';
         factura.id_factura_dolibarr = idFactura;
+      } catch (err) {
+        factura.estado       = 'error_envio';
+        factura.error_detalle = err.message;
+        continue; // No se creó en Dolibarr → no hay nada que persistir.
+      }
 
+      // 2) Persistir los registros locales. La factura YA existe en Dolibarr, así
+      //    que un fallo aquí NO es 'error_envio': se marca aparte conservando el
+      //    id_factura_dolibarr para poder reconciliar a mano (evita perder el
+      //    rastro de una factura emitida y no registrada localmente).
+      try {
         for (const imp of factura.impresoras) {
           await this._persistirImpresora(imp, periodo, idFactura);
         }
       } catch (err) {
-        factura.estado       = 'error_envio';
-        factura.error_detalle = err.message;
+        factura.estado        = 'creada_sin_persistir';
+        factura.error_detalle = `Factura creada en Dolibarr (id ${idFactura}) pero falló la persistencia local: ${err.message}`;
       }
     }
 
@@ -525,6 +537,7 @@ class FacturacionService {
     }
     const creadas = facturas.filter((f) => f.estado === 'creada').length;
     const errores = facturas.filter((f) => f.estado === 'error_envio').length;
+    const creadasSinPersistir = facturas.filter((f) => f.estado === 'creada_sin_persistir').length;
     return {
       total_impresoras:         resultados.length,
       estados_impresoras:       estados,
@@ -533,6 +546,7 @@ class FacturacionService {
       nombres_no_en_dolibarr:   noEncontradas,
       facturas_creadas:         creadas,
       facturas_error_envio:     errores,
+      facturas_creadas_sin_persistir: creadasSinPersistir,
       importe_total_estimado:   Math.round(
         facturas.reduce((s, f) => s + f.importe_total, 0) * 100,
       ) / 100,

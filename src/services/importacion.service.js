@@ -1,5 +1,8 @@
 const crypto = require('crypto');
 
+// Umbral de delta de copias para marcar una lectura como anómala (configurable).
+const ANOMALY_THRESHOLD = parseInt(process.env.ANOMALY_THRESHOLD, 10) || 10000;
+
 function parsearFecha(valor) {
   if (!valor) return null;
   let v = String(valor).trim();
@@ -32,6 +35,10 @@ class ImportacionService {
    * Importa contadores desde datos parseados del CSV.
    * NO factura, solo guarda lecturas en registros_contadores.
    *
+   * La importación real (dry_run=false) se ejecuta dentro de UNA transacción:
+   * si falla cualquier fila, se hace rollback completo y no queda estado parcial
+   * (ni lecturas sueltas, ni empresas reasignadas, ni historial inconsistente).
+   *
    * @param {Object} params
    * @param {Array}  params.impresoras - Array de { serial_number, empresa_nombre, modelo, bn_total, color_total, color1_total, color2_total, color3_total, fecha_lectura }
    * @param {string} params.nombre_archivo - Nombre del CSV original
@@ -48,7 +55,55 @@ class ImportacionService {
     );
     const yaImportado = existentes.length > 0 ? existentes[0] : null;
 
-    // 2. Procesar cada impresora
+    // 2a. Preview (dry_run): solo lecturas, sin transacción
+    if (dry_run) {
+      const agg = await this._procesarTodas(this.pool, impresoras, true);
+      return this._resultado(true, yaImportado, null, impresoras.length, agg);
+    }
+
+    // 2b. Importación real: transacción todo-o-nada
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      const agg = await this._procesarTodas(conn, impresoras, false);
+
+      // 3. Registrar en historial (solo si hay datos guardados)
+      let importacion_id = null;
+      if (agg.guardados > 0) {
+        const [ins] = await conn.query(
+          `INSERT INTO historial_importaciones
+             (nombre_archivo, hash_archivo, total_registros, estado, detalles, usuario)
+           VALUES (?, ?, ?, 'completada', ?, ?)`,
+          [
+            nombre_archivo,
+            hash_archivo,
+            agg.guardados,
+            JSON.stringify({
+              guardados: agg.guardados,
+              duplicados: agg.duplicados,
+              no_encontrados: agg.noEncontrados,
+              empresas_actualizadas: agg.empresasActualizadas,
+              anomalias: agg.anomalias,
+            }),
+            usuario || 'api',
+          ],
+        );
+        importacion_id = ins.insertId;
+      }
+
+      await conn.commit();
+      return this._resultado(false, yaImportado, importacion_id, impresoras.length, agg);
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+
+  // Procesa todas las filas con el "querier" dado (pool en preview, conn en importación).
+  async _procesarTodas(querier, impresoras, dry_run) {
     const resultados = [];
     let guardados = 0;
     let duplicados = 0;
@@ -57,7 +112,7 @@ class ImportacionService {
     let anomalias = 0;
 
     for (const fila of impresoras) {
-      const resultado = await this._procesarFila(fila, dry_run);
+      const resultado = await this._procesarFila(querier, fila, dry_run);
       resultados.push(resultado);
 
       if (resultado.estado === 'guardado') guardados++;
@@ -68,44 +123,28 @@ class ImportacionService {
       if (resultado.anomalia) anomalias++;
     }
 
-    // 3. Registrar en historial (solo si no es dry_run y hay datos guardados)
-    let importacion_id = null;
-    if (!dry_run && guardados > 0) {
-      const [ins] = await this.pool.query(
-        `INSERT INTO historial_importaciones
-           (nombre_archivo, hash_archivo, total_registros, estado, detalles, usuario)
-         VALUES (?, ?, ?, 'completada', ?, ?)`,
-        [
-          nombre_archivo,
-          hash_archivo,
-          guardados,
-          JSON.stringify({
-            guardados, duplicados, no_encontrados: noEncontrados,
-            empresas_actualizadas: empresasActualizadas, anomalias,
-          }),
-          usuario || 'api',
-        ],
-      );
-      importacion_id = ins.insertId;
-    }
+    return { resultados, guardados, duplicados, noEncontrados, empresasActualizadas, anomalias };
+  }
 
+  _resultado(dry_run, yaImportado, importacion_id, total, agg) {
     return {
       modo: dry_run ? 'preview' : 'importacion',
       ya_importado: yaImportado,
       importacion_id,
       resumen: {
-        total: impresoras.length,
-        guardados,
-        duplicados,
-        no_encontrados: noEncontrados,
-        empresas_actualizadas: empresasActualizadas,
-        anomalias,
+        total,
+        guardados: agg.guardados,
+        duplicados: agg.duplicados,
+        no_encontrados: agg.noEncontrados,
+        empresas_actualizadas: agg.empresasActualizadas,
+        anomalias: agg.anomalias,
       },
-      resultados,
+      resultados: agg.resultados,
     };
   }
 
-  async _procesarFila(fila, dry_run) {
+  // querier: pool (preview) o conexión de transacción (importación real).
+  async _procesarFila(querier, fila, dry_run) {
     const serial = String(fila.serial_number || '').trim();
     const fechaCSV = parsearFecha(fila.fecha_lectura);
     const bnTotal = toInt(fila.bn_total);
@@ -130,7 +169,7 @@ class ImportacionService {
     };
 
     // Buscar impresora por número de serie
-    const [impRows] = await this.pool.query(
+    const [impRows] = await querier.query(
       'SELECT id, empresa_id, modelo FROM impresoras WHERE serial_number = ?',
       [serial],
     );
@@ -145,7 +184,7 @@ class ImportacionService {
     const impresora_id = impresora.id;
 
     // Buscar última lectura existente
-    const [lastRows] = await this.pool.query(
+    const [lastRows] = await querier.query(
       `SELECT copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total,
               fecha_lectura
        FROM registros_contadores
@@ -175,12 +214,15 @@ class ImportacionService {
         total: deltaBN + deltaC1,
       };
 
-      // Detectar anomalía (>10000 copias en el delta)
-      if (resultado.delta.total > 10000) {
+      // Detectar anomalía (delta de copias por encima del umbral configurable)
+      if (resultado.delta.total > ANOMALY_THRESHOLD) {
         resultado.anomalia = true;
       }
 
       // Detectar duplicado: misma fecha de lectura (margen de 1 minuto)
+      // NOTA: detección a nivel de aplicación. Para blindar contra carreras entre
+      // dos importaciones simultáneas conviene un índice UNIQUE (impresora_id,
+      // fecha_lectura) en registros_contadores + INSERT IGNORE.
       if (fechaCSV) {
         const lastFecha = new Date(last.fecha_lectura);
         const diffMs = Math.abs(fechaCSV.getTime() - lastFecha.getTime());
@@ -201,7 +243,7 @@ class ImportacionService {
 
     // Verificar si la empresa cambió
     if (empresaNombre) {
-      const [empRows] = await this.pool.query(
+      const [empRows] = await querier.query(
         'SELECT id FROM empresas WHERE nombre_oficial = ?',
         [empresaNombre],
       );
@@ -211,7 +253,7 @@ class ImportacionService {
         resultado.empresa_nueva_id = empRows[0].id;
 
         if (!dry_run) {
-          await this.pool.query(
+          await querier.query(
             'UPDATE impresoras SET empresa_id = ? WHERE id = ?',
             [empRows[0].id, impresora_id],
           );
@@ -221,7 +263,7 @@ class ImportacionService {
 
     // Guardar lectura
     if (!dry_run) {
-      await this.pool.query(
+      await querier.query(
         `INSERT INTO registros_contadores
            (impresora_id, copias_bn_total, copias_color_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,

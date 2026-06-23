@@ -1,4 +1,5 @@
 const EmpresaModel = require("../models/empresa.model");
+const { parseBool } = require("../utils/validators");
 
 class EmpresaController {
   constructor(pool) {
@@ -9,7 +10,7 @@ class EmpresaController {
   getAll = async (req, res, next) => {
     try {
       const filtros = {
-        activo: req.query.activo === undefined ? null : req.query.activo === 'true',
+        activo: parseBool(req.query.activo, null),
         buscar: req.query.buscar || undefined,
       };
       const empresas = await this.empresaModel.findAll(filtros);
