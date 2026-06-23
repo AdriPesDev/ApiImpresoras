@@ -85,7 +85,7 @@ class ContratoModel {
       query += " AND ci.empresa_id = ?";
       params.push(filtros.empresa_id);
     }
-    if (filtros.activo !== undefined) {
+    if (filtros.activo !== undefined && filtros.activo !== null) {
       query += " AND ci.activo = ?";
       params.push(filtros.activo ? 1 : 0);
     }
