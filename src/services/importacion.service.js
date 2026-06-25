@@ -1,4 +1,8 @@
 const crypto = require('crypto');
+// Motor de cálculo de facturación compartido (mismo que usa la emisión de
+// facturas). El puente lecturas → consumos_mensuales lo reutiliza para que el
+// consumo se calcule con UNA sola lógica, idéntica a la app de Python.
+const { procesarImpresora } = require('./motorFacturacion');
 
 // Umbral de delta de copias para marcar una lectura como anómala (configurable).
 const ANOMALY_THRESHOLD = parseInt(process.env.ANOMALY_THRESHOLD, 10) || 10000;
@@ -24,6 +28,18 @@ function formatMySQL(d) {
   if (!d) return new Date().toISOString().slice(0, 19).replace('T', ' ');
   const dt = d instanceof Date ? d : new Date(d);
   return dt.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+// Periodo 'YYYY-MM' a partir de la fecha de lectura del CSV.
+function periodoDe(valor) {
+  const d = parsearFecha(valor);
+  if (!d || isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function periodoActual() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}`;
 }
 
 class ImportacionService {
@@ -68,9 +84,9 @@ class ImportacionService {
 
       const agg = await this._procesarTodas(conn, impresoras, false);
 
-      // 3. Registrar en historial (solo si hay datos guardados)
+      // 3. Registrar en historial (solo si hay datos guardados y el hash no existe ya)
       let importacion_id = null;
-      if (agg.guardados > 0) {
+      if (agg.guardados > 0 && !yaImportado) {
         const [ins] = await conn.query(
           `INSERT INTO historial_importaciones
              (nombre_archivo, hash_archivo, total_registros, estado, detalles, usuario)
@@ -85,6 +101,8 @@ class ImportacionService {
               no_encontrados: agg.noEncontrados,
               empresas_actualizadas: agg.empresasActualizadas,
               anomalias: agg.anomalias,
+              consumos_calculados: agg.consumosCalculados,
+              importe_estimado: agg.importeEstimado,
             }),
             usuario || 'api',
           ],
@@ -110,9 +128,20 @@ class ImportacionService {
     let noEncontrados = 0;
     let empresasActualizadas = 0;
     let anomalias = 0;
+    let consumosCalculados = 0;
+    let importeEstimado = 0;
+
+    // Periodo de respaldo para filas sin fecha legible (se usa el del primer
+    // CSV con fecha; si ninguna tiene, el mes actual).
+    let periodoFallback = null;
+    for (const f of impresoras) {
+      const p = periodoDe(f.fecha_lectura);
+      if (p) { periodoFallback = p; break; }
+    }
+    if (!periodoFallback) periodoFallback = periodoActual();
 
     for (const fila of impresoras) {
-      const resultado = await this._procesarFila(querier, fila, dry_run);
+      const resultado = await this._procesarFila(querier, fila, dry_run, periodoFallback);
       resultados.push(resultado);
 
       if (resultado.estado === 'guardado') guardados++;
@@ -121,9 +150,16 @@ class ImportacionService {
 
       if (resultado.empresa_actualizada) empresasActualizadas++;
       if (resultado.anomalia) anomalias++;
+      if (resultado.consumo && resultado.consumo.facturable && !resultado.consumo.omitido_facturado) {
+        consumosCalculados++;
+        importeEstimado += resultado.consumo.total_facturar || 0;
+      }
     }
 
-    return { resultados, guardados, duplicados, noEncontrados, empresasActualizadas, anomalias };
+    return {
+      resultados, guardados, duplicados, noEncontrados, empresasActualizadas, anomalias,
+      consumosCalculados, importeEstimado: Math.round(importeEstimado * 100) / 100,
+    };
   }
 
   _resultado(dry_run, yaImportado, importacion_id, total, agg) {
@@ -138,13 +174,16 @@ class ImportacionService {
         no_encontrados: agg.noEncontrados,
         empresas_actualizadas: agg.empresasActualizadas,
         anomalias: agg.anomalias,
+        consumos_calculados: agg.consumosCalculados,
+        importe_estimado: agg.importeEstimado,
       },
       resultados: agg.resultados,
     };
   }
 
   // querier: pool (preview) o conexión de transacción (importación real).
-  async _procesarFila(querier, fila, dry_run) {
+  async _procesarFila(querier, fila, dry_run, periodoFallback) {
+    let esDuplicado = false;
     const serial = String(fila.serial_number || '').trim();
     const fechaCSV = parsearFecha(fila.fecha_lectura);
     const bnTotal = toInt(fila.bn_total);
@@ -166,6 +205,7 @@ class ImportacionService {
       anomalia: false,
       empresa_actualizada: false,
       detalle: null,
+      consumo: null,
     };
 
     // Buscar impresora por número de serie
@@ -227,22 +267,23 @@ class ImportacionService {
         const lastFecha = new Date(last.fecha_lectura);
         const diffMs = Math.abs(fechaCSV.getTime() - lastFecha.getTime());
         if (diffMs < 60000) { // menos de 1 minuto de diferencia
-          resultado.estado = 'duplicado';
+          // La lectura ya existe: no se reinserta, pero el consumo del periodo
+          // SÍ se (re)calcula más abajo a partir de las lecturas ya en BD.
+          esDuplicado = true;
           resultado.detalle = 'Ya existe una lectura con esta fecha.';
-          return resultado;
         }
       }
 
       // Detectar contador negativo (lecturas desordenadas o reset)
-      if (resultado.delta.bn < 0 || resultado.delta.c1 < 0) {
+      if (!esDuplicado && (resultado.delta.bn < 0 || resultado.delta.c1 < 0)) {
         resultado.detalle = `Contador negativo: B/N ${resultado.delta.bn}, C1 ${resultado.delta.c1}. Posible reset o lectura desordenada.`;
       }
     } else {
       resultado.detalle = 'Primera lectura para esta impresora.';
     }
 
-    // Verificar si la empresa cambió
-    if (empresaNombre) {
+    // Verificar si la empresa cambió (en duplicados no se toca: la lectura ya existía)
+    if (!esDuplicado && empresaNombre) {
       const [empRows] = await querier.query(
         'SELECT id FROM empresas WHERE nombre_oficial = ?',
         [empresaNombre],
@@ -261,8 +302,8 @@ class ImportacionService {
       }
     }
 
-    // Guardar lectura
-    if (!dry_run) {
+    // Guardar lectura (no en duplicados: ya existe)
+    if (!dry_run && !esDuplicado) {
       await querier.query(
         `INSERT INTO registros_contadores
            (impresora_id, copias_bn_total, copias_color_total, copias_color1_total, copias_color2_total, copias_color3_total, fecha_lectura)
@@ -271,8 +312,147 @@ class ImportacionService {
       );
     }
 
-    resultado.estado = dry_run ? 'preview' : 'guardado';
+    // ── Puente lecturas → consumos_mensuales ──────────────────────────────
+    // Calcula y persiste el consumo del periodo (facturado=0) con el MISMO
+    // motor que la emisión. Vale para filas nuevas y duplicadas. Si falla, la
+    // lectura NO se pierde: se reporta el error y la importación continúa.
+    if (!dry_run) {
+      const periodo = periodoDe(fila.fecha_lectura) || periodoFallback;
+      try {
+        resultado.consumo = await this._calcularYPersistirConsumo(
+          querier, impresora_id, serial, fila, fechaCSV, periodo,
+        );
+      } catch (e) {
+        resultado.consumo = null;
+        resultado.consumo_error = e.message;
+      }
+    }
+
+    resultado.estado = esDuplicado ? 'duplicado' : (dry_run ? 'preview' : 'guardado');
     return resultado;
+  }
+
+  // Calcula el consumo del periodo para una impresora y lo upserta en
+  // consumos_mensuales con facturado=0 (la emisión a Dolibarr es un paso aparte).
+  // Devuelve un resumen { periodo, facturable, total_facturar, ... } o null.
+  async _calcularYPersistirConsumo(querier, impresora_id, serial, fila, fechaCSV, periodo) {
+    if (!fechaCSV) return null; // sin fecha fiable no se ubica el periodo
+
+    const [precRows] = await querier.query(
+      `SELECT precio_copia_bn, precio_copia_color1, precio_copia_color2, precio_copia_color3,
+              tipo_facturacion, activa
+       FROM impresoras WHERE serial_number = ? AND activa = TRUE`,
+      [serial],
+    );
+    const preciosImpresora = precRows[0] || null;
+    if (!preciosImpresora) return { periodo, facturable: false, estado: 'sin_precio', total_facturar: 0 };
+
+    // Líneas de contrato activas (tabla canónica singular contrato_impresoras).
+    const [contRows] = await querier.query(
+      `SELECT ci.empresa_id, e.nombre_oficial AS empresa_nombre, ci.porcentaje_participacion,
+              ci.precio_bn, ci.precio_color1, ci.precio_color2, ci.precio_color3,
+              ci.copias_bn_incluidas, ci.copias_c1_incluidas,
+              ci.copias_c2_incluidas, ci.copias_c3_incluidas,
+              ci.precio_minimo_mensual, c.numero_contrato
+       FROM contrato_impresoras ci
+       INNER JOIN contratos c ON c.id = ci.contrato_id
+       INNER JOIN impresoras i ON i.id = ci.impresora_id
+       LEFT  JOIN empresas e ON e.id = ci.empresa_id
+       WHERE i.serial_number = ?
+         AND ci.activo = TRUE AND c.activo = TRUE
+         AND c.fecha_inicio <= CURDATE()
+         AND (c.fecha_fin IS NULL OR c.fecha_fin >= CURDATE())
+       ORDER BY ci.id`,
+      [serial],
+    );
+
+    // Lectura de apertura del periodo: la última anterior al día 1 del periodo.
+    // Usar la frontera del mes lo hace robusto frente a lecturas duplicadas
+    // dentro del propio periodo (re-importar el mismo CSV no descuadra el diff).
+    const [prevRows] = await querier.query(
+      `SELECT copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total,
+              fecha_lectura, contador_negativo
+       FROM registros_contadores
+       WHERE impresora_id = ? AND fecha_lectura < ?
+       ORDER BY fecha_lectura DESC LIMIT 1`,
+      [impresora_id, `${periodo}-01 00:00:00`],
+    );
+    const previa = prevRows[0] || null;
+
+    const resultados = procesarImpresora({
+      fila, periodo, preciosImpresora, ultimaLectura: previa, contratoLineas: contRows,
+    });
+
+    // Un consumo por impresora = suma de las partes por empresa (contrato compartido).
+    const facturables = resultados.filter((r) => r.estado === 'facturable');
+    if (!facturables.length) {
+      const estado = resultados.length ? resultados[0].estado : 'sin_consumo';
+      return { periodo, facturable: false, estado, total_facturar: 0 };
+    }
+
+    let copiasBN = 0; let copiasC1 = 0; let copiasC2 = 0; let copiasC3 = 0;
+    let impBN = 0; let impC1 = 0; let impC2 = 0; let impC3 = 0; let total = 0;
+    let bnIni = null; let bnFin = null; let c1Ini = null; let c1Fin = null;
+    for (const r of facturables) {
+      const d = r.detalle;
+      copiasBN += toInt(d.copias_bn); copiasC1 += toInt(d.copias_c1);
+      copiasC2 += toInt(d.copias_c2); copiasC3 += toInt(d.copias_c3);
+      impBN += Number(d.importe_bn) || 0; impC1 += Number(d.importe_c1) || 0;
+      impC2 += Number(d.importe_c2) || 0; impC3 += Number(d.importe_c3) || 0;
+      total += Number(d.importe_total) || 0;
+      bnIni = toInt(d.bn_anterior); bnFin = toInt(d.bn_actual);
+      c1Ini = toInt(d.c1_anterior); c1Fin = toInt(d.c1_actual);
+    }
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const totalRound = r2(total);
+
+    // No pisar un consumo de un periodo ya facturado.
+    const [exist] = await querier.query(
+      'SELECT facturado FROM consumos_mensuales WHERE impresora_id = ? AND periodo = ?',
+      [impresora_id, periodo],
+    );
+    if (exist.length && exist[0].facturado) {
+      return { periodo, facturable: true, omitido_facturado: true, total_facturar: totalRound };
+    }
+
+    // copias/importe "color" (legacy) == color1, igual que la app de Python.
+    await querier.query(
+      `INSERT INTO consumos_mensuales
+         (impresora_id, periodo,
+          copias_bn_mes, copias_color_mes, copias_color1_mes, copias_color2_mes, copias_color3_mes,
+          importe_bn, importe_color, importe_color1, importe_color2, importe_color3,
+          total_facturar, facturado,
+          contador_bn_inicio, contador_bn_fin, contador_color1_inicio, contador_color1_fin)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         copias_bn_mes = VALUES(copias_bn_mes),
+         copias_color_mes = VALUES(copias_color_mes),
+         copias_color1_mes = VALUES(copias_color1_mes),
+         copias_color2_mes = VALUES(copias_color2_mes),
+         copias_color3_mes = VALUES(copias_color3_mes),
+         importe_bn = VALUES(importe_bn),
+         importe_color = VALUES(importe_color),
+         importe_color1 = VALUES(importe_color1),
+         importe_color2 = VALUES(importe_color2),
+         importe_color3 = VALUES(importe_color3),
+         total_facturar = VALUES(total_facturar),
+         contador_bn_inicio = VALUES(contador_bn_inicio),
+         contador_bn_fin = VALUES(contador_bn_fin),
+         contador_color1_inicio = VALUES(contador_color1_inicio),
+         contador_color1_fin = VALUES(contador_color1_fin)`,
+      [
+        impresora_id, periodo,
+        copiasBN, copiasC1, copiasC1, copiasC2, copiasC3,
+        r2(impBN), r2(impC1), r2(impC1), r2(impC2), r2(impC3),
+        totalRound,
+        bnIni, bnFin, c1Ini, c1Fin,
+      ],
+    );
+
+    return {
+      periodo, facturable: true,
+      copias_bn: copiasBN, copias_color: copiasC1, total_facturar: totalRound,
+    };
   }
 
   /**

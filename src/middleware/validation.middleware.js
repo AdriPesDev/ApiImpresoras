@@ -80,20 +80,14 @@ const facturacionValidations = {
     body('periodo')
       .matches(/^\d{4}-\d{2}$/)
       .withMessage('periodo debe tener formato YYYY-MM'),
-    body('impresoras')
-      .isArray({ min: 1 })
-      .withMessage('impresoras debe ser un array con al menos un elemento'),
-    body('impresoras.*.serial_number')
-      .notEmpty()
-      .withMessage('serial_number es requerido en cada impresora'),
-    body('impresoras.*.empresa_nombre')
-      .notEmpty()
-      .withMessage('empresa_nombre es requerido en cada impresora'),
-    body('impresoras.*.bn_total').optional().isInt({ min: 0 }),
-    body('impresoras.*.color_total').optional().isInt({ min: 0 }),
-    body('impresoras.*.color1_total').optional().isInt({ min: 0 }),
-    body('impresoras.*.color2_total').optional().isInt({ min: 0 }),
-    body('impresoras.*.color3_total').optional().isInt({ min: 0 }),
+    body('consumo_ids')
+      .optional()
+      .isArray()
+      .withMessage('consumo_ids debe ser un array'),
+    body('consumo_ids.*')
+      .optional()
+      .isInt({ min: 1 })
+      .withMessage('cada consumo_id debe ser un entero positivo'),
     validate,
   ],
 };
