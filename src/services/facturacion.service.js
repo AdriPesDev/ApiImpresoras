@@ -120,7 +120,7 @@ class FacturacionService {
         empresasNoEncontradas.push(empresaNombre);
         for (const imp of impresoras) {
           imp.estado = 'sin_empresa_dolibarr';
-          imp.detalle.msg = `'${empresaNombre}' no encontrada en Dolibarr.`;
+          imp.detalle.msg = 'no encontrada en Dolibarr.';
         }
         continue;
       }
@@ -238,7 +238,10 @@ class FacturacionService {
     );
     const previa = prevRows[0] || null;
 
-    return procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura: previa, contratoLineas });
+    const resultadosMotor = procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura: previa, contratoLineas });
+    const fechaAnterior = previa?.fecha_lectura || null;
+    resultadosMotor.forEach((r) => { r.fecha_anterior = fechaAnterior; });
+    return resultadosMotor;
   }
 
   // ── Public API ────────────────────────────────
@@ -311,6 +314,45 @@ class FacturacionService {
     }
 
     const excluidas = resultados.filter((r) => r.estado !== 'facturable');
+    return {
+      periodo,
+      modo: 'produccion',
+      resumen: this._resumen(resultados, facturas, empresasNoEncontradas),
+      facturas_por_empresa: facturas,
+      impresoras_excluidas: excluidas,
+    };
+  }
+
+  // ── Análisis full-fleet (solo para el reporte Excel) ──────────
+  // Foto del periodo de TODA la flota, independiente de la selección de consumos.
+  // Población = impresoras con ≥1 lectura en el periodo (equivale al CSV importado).
+  // Es read-only respecto a Dolibarr: resuelve terceros con GET cacheado para
+  // detectar `sin_empresa_dolibarr`, pero NUNCA emite facturas (no llama a
+  // crearFactura). Reutiliza el mismo motor y helpers que la emisión, así que
+  // clasifica cada impresora en facturable / sin_consumo / sin_precio / etc.,
+  // recuperando las categorías que el flujo consumo-driven no puede ver.
+  async analizarFlota(periodo) {
+    this.dolibarr.clearCache();
+    const [printers] = await this.pool.query(
+      `SELECT DISTINCT i.id AS impresora_id, i.serial_number, i.modelo,
+              e.nombre_oficial AS empresa_nombre
+       FROM registros_contadores rc
+       INNER JOIN impresoras i ON i.id = rc.impresora_id
+       LEFT  JOIN empresas e ON e.id = i.empresa_id
+       WHERE DATE_FORMAT(rc.fecha_lectura, '%Y-%m') = ?
+       ORDER BY e.nombre_oficial, i.serial_number`,
+      [periodo],
+    );
+
+    // _resultadosParaConsumo destructura {impresora_id, serial_number, modelo,
+    // empresa_nombre}: los `printers` ya traen esos campos → reutilización directa.
+    const resultados = (await Promise.all(
+      printers.map((p) => this._resultadosParaConsumo(p, periodo)),
+    )).flat();
+
+    const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(resultados, periodo);
+    const excluidas = resultados.filter((r) => r.estado !== 'facturable');
+
     return {
       periodo,
       modo: 'produccion',

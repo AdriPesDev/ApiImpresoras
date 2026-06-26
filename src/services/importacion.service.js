@@ -282,21 +282,33 @@ class ImportacionService {
       resultado.detalle = 'Primera lectura para esta impresora.';
     }
 
-    // Verificar si la empresa cambió (en duplicados no se toca: la lectura ya existía)
+    // Verificar si la empresa cambió; si no existe en BD, crearla para que
+    // el nombre quede vinculado a la impresora y aparezca en los informes.
     if (!esDuplicado && empresaNombre) {
       const [empRows] = await querier.query(
         'SELECT id FROM empresas WHERE nombre_oficial = ?',
         [empresaNombre],
       );
-      if (empRows.length && empRows[0].id !== impresora.empresa_id) {
+
+      let targetEmpresaId = empRows.length ? empRows[0].id : null;
+
+      if (!targetEmpresaId && !dry_run) {
+        const [ins] = await querier.query(
+          'INSERT INTO empresas (dolibarr_id, nombre_oficial, activo) VALUES (0, ?, 1)',
+          [empresaNombre],
+        );
+        targetEmpresaId = ins.insertId;
+      }
+
+      if (targetEmpresaId !== null && targetEmpresaId !== impresora.empresa_id) {
         resultado.empresa_actualizada = true;
         resultado.empresa_anterior_id = impresora.empresa_id;
-        resultado.empresa_nueva_id = empRows[0].id;
+        resultado.empresa_nueva_id = targetEmpresaId;
 
         if (!dry_run) {
           await querier.query(
             'UPDATE impresoras SET empresa_id = ? WHERE id = ?',
-            [empRows[0].id, impresora_id],
+            [targetEmpresaId, impresora_id],
           );
         }
       }
