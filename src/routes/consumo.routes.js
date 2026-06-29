@@ -7,6 +7,7 @@ module.exports = function createConsumoRoutes(controller) {
   router.get('/', controller.getAll);
   router.get('/pendientes', controller.getPendientes);
   router.get('/resumen', controller.getResumen);
+  router.patch('/cerrar-periodo', controller.cerrarPeriodo);
   router.get('/:id', controller.getById);
   router.put('/:id/facturar', controller.marcarFacturado);
 

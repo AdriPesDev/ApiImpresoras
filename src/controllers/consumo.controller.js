@@ -65,6 +65,20 @@ class ConsumoController {
     }
   };
 
+  // PATCH /api/consumos/cerrar-periodo
+  cerrarPeriodo = async (req, res, next) => {
+    try {
+      const { periodo } = req.body;
+      if (!periodo || !/^\d{4}-\d{2}$/.test(periodo)) {
+        return res.status(400).json({ error: 'Formato de periodo inválido (YYYY-MM).' });
+      }
+      const resultado = await this.consumoModel.cerrarPeriodo(periodo);
+      res.json(resultado);
+    } catch (error) {
+      next(error);
+    }
+  };
+
   // PUT /api/consumos/:id/facturar
   marcarFacturado = async (req, res, next) => {
     try {

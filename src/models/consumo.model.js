@@ -139,6 +139,14 @@ class ConsumoModel {
     return this.findById(id);
   }
 
+  async cerrarPeriodo(periodo) {
+    const [result] = await this.pool.query(
+      "UPDATE consumos_mensuales SET facturado = 1 WHERE periodo = ? AND facturado = 0",
+      [periodo],
+    );
+    return { periodo, actualizados: result.affectedRows };
+  }
+
   async getResumenFacturacion(periodo = null) {
     let query = `
       SELECT 

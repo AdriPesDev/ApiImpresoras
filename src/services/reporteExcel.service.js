@@ -15,6 +15,8 @@ const C = {
   grayLight:   'FFD9D9D9',
   red:         'FFCC0000',
   redLight:    'FFFFD6D6',
+  purple:      'FF6B21A8',
+  purpleLight: 'FFF3E8FF',
   amber:       'FFF0A500',
   white:       'FFFFFFFF',
   black:       'FF000000',
@@ -75,18 +77,20 @@ function crearHojaResumen(wb, resultado, meta) {
   const nSinConsumo  = estados.sin_consumo           || 0;
   const nSinEmpresa  = estados.sin_empresa_dolibarr  || 0;
   const nSinPrecio   = estados.sin_precio            || 0;
+  const nInactivas   = resumen.total_inactivas       || 0;
 
-  // Anchos de columna (5 cols: A-E)
+  // Anchos de columna (6 cols: A-F)
   ws.columns = [
     { width: 36 }, // A — etiquetas / Total impresoras
-    { width: 15 }, // B — Importe KPI (###### grande pero oculto) / parte de "Nº impresoras" merge
+    { width: 15 }, // B — Importe KPI (######) / parte de "Nº impresoras" merge
     { width: 22 }, // C — Facturas creadas / parte de "Nº impresoras" merge
     { width: 22 }, // D — Facturas con error / parte de "Acción" merge
     { width: 28 }, // E — Sin empresa Dolibarr / parte de "Acción" merge
+    { width: 22 }, // F — Impresoras inactivas
   ];
 
   // Fila 1: Título principal
-  ws.mergeCells('A1:E1');
+  ws.mergeCells('A1:F1');
   const titleCell = ws.getCell('A1');
   titleCell.value = `REPORTE DE FACTURACIÓN — Período ${periodo}`;
   titleCell.font      = font({ size: 18, bold: true, color: C.white });
@@ -110,7 +114,7 @@ function crearHojaResumen(wb, resultado, meta) {
     ws.getCell(row, 1).fill      = fill(C.navyLight);
     ws.getCell(row, 1).font      = font({ bold: true, color: C.navy });
     ws.getCell(row, 1).alignment = align('right');
-    ws.mergeCells(row, 2, row, 5);
+    ws.mergeCells(row, 2, row, 6);
     ws.getCell(row, 2).value     = val;
     ws.getCell(row, 2).font      = font(); // valor sobre blanco, texto negro
     ws.getCell(row, 2).alignment = align('left');
@@ -122,13 +126,13 @@ function crearHojaResumen(wb, resultado, meta) {
   // Filas 8–10: Tabla KPIs (5 cajas claras, una por indicador)
   // Cada caja = etiqueta (fila 9) + valor (fila 10) con el MISMO fondo claro,
   // texto oscuro y borde medium del color oscuro. Fila 8 = hueco superior.
-  // (Sin raya blanca ni fila separadora diminuta como antes.)
   const kpiBoxes = [
     { label: 'Total impresoras',        bg: C.navyLight,   fg: C.navy   },
     { label: 'Importe total\nestimado', bg: C.orangeLight, fg: C.orange },
     { label: 'Facturas creadas',        bg: C.greenLight,  fg: C.green  },
     { label: 'Facturas con error',      bg: C.redLight,    fg: C.red    },
     { label: 'Sin empresa Dolibarr',    bg: C.orangeLight, fg: C.orange },
+    { label: 'Impresoras\ninactivas',   bg: C.purpleLight, fg: C.purple },
   ];
   const kpiValues = [
     resumen.total_impresoras,
@@ -136,6 +140,7 @@ function crearHojaResumen(wb, resultado, meta) {
     resumen.facturas_creadas,
     resumen.facturas_error_envio || 0,
     resumen.empresas_no_en_dolibarr || 0,
+    nInactivas,
   ];
 
   ws.getRow(8).height  = 12; // hueco superior
@@ -172,13 +177,12 @@ function crearHojaResumen(wb, resultado, meta) {
   ws.getRow(12).height = 6;
 
   // Fila 13: Cabecera tabla categorías
-  // — sin border para evitar el subrayado blanco sobre las filas de datos
   // — "Nº impresoras" fusiona B+C (así cabe el texto y la col B puede ser estrecha para el KPI)
   // — "Acción recomendada" fusiona D+E
   const catHeaderDefs = [
     { col: 1, text: 'Categoría' },
     { col: 2, text: 'Nº impresoras', merge: [13, 2, 13, 3] },
-    { col: 4, text: 'Acción recomendada', merge: [13, 4, 13, 5] },
+    { col: 4, text: 'Acción recomendada', merge: [13, 4, 13, 6] },
   ];
   catHeaderDefs.forEach(({ col, text, merge }) => {
     if (merge) ws.mergeCells(...merge);
@@ -192,11 +196,12 @@ function crearHojaResumen(wb, resultado, meta) {
 
   // Filas 14–18: categorías
   const cats = [
-    { icon: '✅', label: 'Facturadas correctamente',    n: nFacturadas, accion: 'Ninguna — facturado correctamente',                    bg: C.greenLight,  fontC: C.green },
-    { icon: '⚠️', label: 'Contador negativo ignorado',  n: nNegIgn,     accion: 'Revisar si procede ajuste manual en la factura',         bg: C.orangeLight, fontC: C.orange },
-    { icon: '■',  label: 'Sin consumo (0 copias)',       n: nSinConsumo, accion: 'Verificar si la máquina está operativa',                 bg: C.grayLight,   fontC: C.gray },
-    { icon: '✗',  label: 'Sin empresa en Dolibarr',     n: nSinEmpresa, accion: 'Crear/corregir el tercero en Dolibarr y refacturar',     bg: C.redLight,    fontC: C.red },
-    { icon: '⚠️', label: 'Sin precio en BD',            n: nSinPrecio,  accion: 'Registrar precio en BD y refacturar',                   bg: C.orangeLight, fontC: C.orange },
+    { icon: '✅', label: 'Facturadas correctamente',    n: nFacturadas, accion: 'Ninguna — facturado correctamente',                             bg: C.greenLight,  fontC: C.green },
+    { icon: '⚠️', label: 'Contador negativo ignorado',  n: nNegIgn,     accion: 'Revisar si procede ajuste manual en la factura',                bg: C.orangeLight, fontC: C.orange },
+    { icon: '■',  label: 'Sin consumo (0 copias)',       n: nSinConsumo, accion: 'Verificar si la máquina está operativa',                        bg: C.grayLight,   fontC: C.gray },
+    { icon: '✗',  label: 'Sin empresa en Dolibarr',     n: nSinEmpresa, accion: 'Crear/corregir el tercero en Dolibarr y refacturar',            bg: C.redLight,    fontC: C.red },
+    { icon: '⚠️', label: 'Sin precio en BD',            n: nSinPrecio,  accion: 'Registrar precio en BD y refacturar',                          bg: C.orangeLight, fontC: C.orange },
+    { icon: '✖',  label: 'Impresoras inactivas',         n: nInactivas,  accion: 'Revisar consumos y desactivarlos antes de facturar',           bg: C.purpleLight, fontC: C.purple },
   ];
 
   cats.forEach((cat, i) => {
@@ -218,7 +223,7 @@ function crearHojaResumen(wb, resultado, meta) {
     cB.alignment = align('center');
     cB.border    = border();
 
-    ws.mergeCells(row, 4, row, 5); // D-E: acción
+    ws.mergeCells(row, 4, row, 6); // D-F: acción
     const cC = ws.getCell(row, 4);
     cC.value     = cat.accion;
     cC.fill      = fill(cat.bg);
@@ -413,7 +418,7 @@ function construirObservaciones(detalle) {
   if (detalle.absorbe_negativo) {
     partes.push('Absorbe negativo del mes anterior');
   }
-  return partes.join('; ');
+  return partes.join('; ') || detalle.msg || '';
 }
 
 // ── Función principal exportada ───────────────────────────────────────────────
@@ -439,15 +444,59 @@ async function generarReporteExcel(resultado, meta = {}) {
     }
   }
 
-  // Inyectar conteo de neg. ignorado en el resumen para la hoja Resumen
-  if (resultado.resumen && !resultado.resumen.estados_impresoras.contador_negativo_ignorado) {
-    resultado.resumen.estados_impresoras.contador_negativo_ignorado = negIgnorado.length;
-  }
+  const excluidas = resultado.impresoras_excluidas || [];
 
-  const excluidas   = resultado.impresoras_excluidas || [];
-  const sinConsumo  = excluidas.filter((r) => r.estado === 'sin_consumo');
-  const sinEmpresa  = excluidas.filter((r) => r.estado === 'sin_empresa_dolibarr');
-  const sinPrecio   = excluidas.filter((r) => r.estado === 'sin_precio');
+  // Igual que Python _categorizar: las advertencias tienen prioridad sobre el estado.
+  // Cualquier excluida con aviso_bn_negativo o aviso_color_negativo va a "Neg. ignorado"
+  // independientemente de su estado (sin_consumo, sin_empresa_dolibarr, sin_precio…).
+  // Esto cubre el caso de una impresora facturable con contador negativo que además no
+  // tiene tercero en Dolibarr: _agruparYConstruir muta su estado a sin_empresa_dolibarr
+  // pero conserva aviso_bn_negativo en detalle.
+  const exclNeg = excluidas.filter((r) => {
+    const d = r.detalle || {};
+    return d.aviso_bn_negativo != null || d.aviso_color_negativo != null;
+  });
+  // contador_negativo = reset total (BN y color ambos negativos): no tiene aviso en
+  // detalle (el motor lo devuelve por su propio estado), pero también va a "Neg. ignorado".
+  const contadorNegativoTotal = excluidas.filter((r) => r.estado === 'contador_negativo');
+  negIgnorado.push(...exclNeg, ...contadorNegativoTotal);
+
+  // Restantes: sin aviso de contador negativo y sin estado contador_negativo.
+  const sinConsumo = excluidas.filter((r) => {
+    const d = r.detalle || {};
+    return r.estado === 'sin_consumo'
+      && d.aviso_bn_negativo == null && d.aviso_color_negativo == null;
+  });
+  const sinEmpresa = excluidas.filter((r) => {
+    const d = r.detalle || {};
+    return r.estado === 'sin_empresa_dolibarr'
+      && d.aviso_bn_negativo == null && d.aviso_color_negativo == null;
+  });
+  const sinPrecio = excluidas.filter((r) => {
+    const d = r.detalle || {};
+    return r.estado === 'sin_precio'
+      && d.aviso_bn_negativo == null && d.aviso_color_negativo == null;
+  });
+  const inactivas   = resultado.impresoras_inactivas || [];
+
+  // Inactivas que además tienen contador negativo → también van a "Neg. ignorado"
+  // (son impresoras retiradas que tuvieron reset de contador en el periodo).
+  const inactivasNeg = inactivas.filter((r) => {
+    const d = r.detalle || {};
+    return d.aviso_bn_negativo != null || d.aviso_color_negativo != null;
+  });
+  negIgnorado.push(...inactivasNeg);
+
+  // Sincronizar conteos del Resumen con los arrays reales del Excel.
+  // Necesario porque la prioridad de avisos sobre estado puede mover printers
+  // de sin_empresa/sin_precio/sin_consumo a negIgnorado.
+  if (resultado.resumen) {
+    const est = resultado.resumen.estados_impresoras;
+    est.contador_negativo_ignorado = negIgnorado.length;
+    est.sin_consumo                = sinConsumo.length;
+    est.sin_empresa_dolibarr       = sinEmpresa.length;
+    est.sin_precio                 = sinPrecio.length;
+  }
 
   const wb = new ExcelJS.Workbook();
   wb.creator  = 'ApiImpresoras';
@@ -510,6 +559,17 @@ async function generarReporteExcel(resultado, meta = {}) {
     sinPrecio,
     C.orange,
     C.orangeLight,
+  );
+
+  // Hoja 7: Inactivas
+  crearHojaSimple(
+    wb,
+    '✖ Inactivas',
+    `IMPRESORAS INACTIVAS — ${periodo}`,
+    'Marcadas como inactivas en BD. Revisar sus consumos antes de facturar para evitar facturas incorrectas.',
+    inactivas,
+    C.purple,
+    C.purpleLight,
   );
 
   // Guardar archivo

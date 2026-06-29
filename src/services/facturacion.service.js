@@ -236,7 +236,24 @@ class FacturacionService {
        ORDER BY fecha_lectura DESC LIMIT 1`,
       [impresora_id, `${periodo}-01 00:00:00`],
     );
-    const previa = prevRows[0] || null;
+    let previa = prevRows[0] || null;
+
+    // Si no hay lectura anterior al inicio del periodo (primera vez en el sistema
+    // o tras limpiar datos) pero existen lecturas previas dentro del mismo mes,
+    // usamos la más antigua como referencia. Detecta resets intra-periodo:
+    // ej. se importó 19.500 a principios de junio y 411 tras un reset a final de mes.
+    if (!previa && cur) {
+      const [intraRows] = await this.pool.query(
+        `SELECT copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total,
+                fecha_lectura, contador_negativo
+         FROM registros_contadores
+         WHERE impresora_id = ? AND DATE_FORMAT(fecha_lectura, '%Y-%m') = ?
+           AND fecha_lectura < ?
+         ORDER BY fecha_lectura ASC LIMIT 1`,
+        [impresora_id, periodo, cur.fecha_lectura],
+      );
+      previa = intraRows[0] || null;
+    }
 
     const resultadosMotor = procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura: previa, contratoLineas });
     const fechaAnterior = previa?.fecha_lectura || null;
@@ -333,6 +350,9 @@ class FacturacionService {
   // recuperando las categorías que el flujo consumo-driven no puede ver.
   async analizarFlota(periodo) {
     this.dolibarr.clearCache();
+
+    // Solo impresoras ACTIVAS: las inactivas se recogen aparte para no
+    // contaminar la categoría sin_precio con falsos positivos.
     const [printers] = await this.pool.query(
       `SELECT DISTINCT i.id AS impresora_id, i.serial_number, i.modelo,
               e.nombre_oficial AS empresa_nombre
@@ -340,25 +360,320 @@ class FacturacionService {
        INNER JOIN impresoras i ON i.id = rc.impresora_id
        LEFT  JOIN empresas e ON e.id = i.empresa_id
        WHERE DATE_FORMAT(rc.fecha_lectura, '%Y-%m') = ?
+         AND i.activa = TRUE
        ORDER BY e.nombre_oficial, i.serial_number`,
       [periodo],
     );
 
-    // _resultadosParaConsumo destructura {impresora_id, serial_number, modelo,
-    // empresa_nombre}: los `printers` ya traen esos campos → reutilización directa.
-    const resultados = (await Promise.all(
-      printers.map((p) => this._resultadosParaConsumo(p, periodo)),
-    )).flat();
+    // Impresoras inactivas con lectura en el periodo → hoja de aviso en el Excel.
+    // Se trae la lectura más reciente del periodo + la anterior al día 1 para
+    // poder detectar contadores negativos (reset) incluso en inactivas.
+    const periodoFrontera = `${periodo}-01 00:00:00`;
+    const [inactivasRows] = await this.pool.query(
+      `SELECT i.serial_number, i.modelo,
+              e.nombre_oficial AS empresa_nombre,
+              rc.copias_bn_total     AS bn_actual,
+              rc.copias_color1_total AS c1_actual,
+              rc.fecha_lectura,
+              COALESCE(
+                (SELECT r2.copias_bn_total FROM registros_contadores r2
+                 WHERE r2.impresora_id = i.id AND r2.fecha_lectura < ?
+                 ORDER BY r2.fecha_lectura DESC LIMIT 1),
+                (SELECT r2.copias_bn_total FROM registros_contadores r2
+                 WHERE r2.impresora_id = i.id
+                   AND DATE_FORMAT(r2.fecha_lectura, '%Y-%m') = ?
+                   AND r2.fecha_lectura < rc.fecha_lectura
+                 ORDER BY r2.fecha_lectura ASC LIMIT 1)
+              ) AS bn_anterior,
+              COALESCE(
+                (SELECT r3.copias_color1_total FROM registros_contadores r3
+                 WHERE r3.impresora_id = i.id AND r3.fecha_lectura < ?
+                 ORDER BY r3.fecha_lectura DESC LIMIT 1),
+                (SELECT r3.copias_color1_total FROM registros_contadores r3
+                 WHERE r3.impresora_id = i.id
+                   AND DATE_FORMAT(r3.fecha_lectura, '%Y-%m') = ?
+                   AND r3.fecha_lectura < rc.fecha_lectura
+                 ORDER BY r3.fecha_lectura ASC LIMIT 1)
+              ) AS c1_anterior
+       FROM registros_contadores rc
+       INNER JOIN impresoras i ON i.id = rc.impresora_id
+       LEFT  JOIN empresas e ON e.id = i.empresa_id
+       WHERE DATE_FORMAT(rc.fecha_lectura, '%Y-%m') = ?
+         AND i.activa = FALSE
+         AND rc.fecha_lectura = (
+           SELECT MAX(r4.fecha_lectura) FROM registros_contadores r4
+           WHERE r4.impresora_id = i.id
+             AND DATE_FORMAT(r4.fecha_lectura, '%Y-%m') = ?
+         )
+       ORDER BY empresa_nombre, i.serial_number`,
+      [periodoFrontera, periodo, periodoFrontera, periodo, periodo, periodo],
+    );
+
+    const impresorasInactivas = inactivasRows.map((r) => {
+      const bnAnterior = r.bn_anterior != null ? Number(r.bn_anterior) : null;
+      const bnActual   = r.bn_actual   != null ? Number(r.bn_actual)   : 0;
+      const c1Anterior = r.c1_anterior != null ? Number(r.c1_anterior) : null;
+      const c1Actual   = r.c1_actual   != null ? Number(r.c1_actual)   : 0;
+      const deltaBn    = bnAnterior !== null ? bnActual - bnAnterior : null;
+      const deltaC1    = c1Anterior !== null ? c1Actual - c1Anterior : null;
+      const avisobn    = (deltaBn !== null && deltaBn < 0)  ? deltaBn  : null;
+      const avisoc1    = (deltaC1 !== null && deltaC1 < 0) ? deltaC1 : null;
+      const detalle    = {
+        bn_anterior: bnAnterior ?? 0,
+        bn_actual:   bnActual,
+        msg: (avisobn !== null || avisoc1 !== null)
+          ? 'Inactiva con contador negativo detectado.'
+          : 'Impresora marcada como inactiva en BD.',
+      };
+      if (avisobn !== null) detalle.aviso_bn_negativo    = avisobn;
+      if (avisoc1 !== null) detalle.aviso_color_negativo = avisoc1;
+      return {
+        empresa:        r.empresa_nombre || '',
+        serial_number:  r.serial_number,
+        modelo:         r.modelo,
+        estado:         'inactiva',
+        fecha_anterior: null,
+        fecha_lectura:  r.fecha_lectura || null,
+        detalle,
+      };
+    });
+
+    // Impresoras facturables con timestamp histórico: ya están en consumos_mensuales
+    // (total_facturar > 0) tras el import, pero NO tienen lectura en
+    // registros_contadores para el periodo actual → la query principal no las ve.
+    const [facturablesOldRows] = await this.pool.query(
+      `SELECT cm.impresora_id,
+              i.serial_number, i.modelo,
+              e.nombre_oficial          AS empresa_nombre,
+              cm.copias_bn_mes          AS copias_bn,
+              cm.copias_color1_mes      AS copias_c1,
+              cm.importe_bn, cm.importe_color1,
+              cm.total_facturar,
+              cm.contador_bn_inicio     AS bn_anterior,
+              cm.contador_bn_fin        AS bn_actual,
+              cm.contador_color1_inicio AS c1_anterior,
+              cm.contador_color1_fin    AS c1_actual,
+              rc_last.fecha_lectura     AS fecha_actual,
+              rc_prev.fecha_lectura     AS fecha_anterior
+       FROM consumos_mensuales cm
+       INNER JOIN impresoras i ON i.id = cm.impresora_id
+       LEFT  JOIN empresas e ON e.id = i.empresa_id
+       LEFT  JOIN registros_contadores rc_last
+         ON rc_last.impresora_id = cm.impresora_id
+        AND rc_last.fecha_lectura = (
+              SELECT MAX(r.fecha_lectura) FROM registros_contadores r
+              WHERE r.impresora_id = cm.impresora_id)
+       LEFT  JOIN registros_contadores rc_prev
+         ON rc_prev.impresora_id = cm.impresora_id
+        AND rc_prev.fecha_lectura = (
+              SELECT MAX(r.fecha_lectura) FROM registros_contadores r
+              WHERE r.impresora_id = cm.impresora_id
+                AND r.fecha_lectura < rc_last.fecha_lectura)
+       WHERE cm.periodo = ?
+         AND cm.total_facturar > 0
+         AND i.activa = TRUE
+         AND NOT EXISTS (
+               SELECT 1 FROM registros_contadores r
+               WHERE r.impresora_id = cm.impresora_id
+                 AND DATE_FORMAT(r.fecha_lectura, '%Y-%m') = ?)
+       ORDER BY e.nombre_oficial, i.serial_number`,
+      [periodo, periodo],
+    );
+
+    const facturablesOld = facturablesOldRows.map((r) => {
+      const copBN = Number(r.copias_bn) || 0;
+      const copC1 = Number(r.copias_c1) || 0;
+      const impBN = Number(r.importe_bn) || 0;
+      const impC1 = Number(r.importe_color1) || 0;
+      const total = Number(r.total_facturar) || 0;
+      const lineas = [];
+      if (copBN > 0) lineas.push({ desc: `Copias BN — ${r.modelo} (SN: ${r.serial_number})`, qty: copBN, subprice: Math.round(impBN / copBN * 1e6) / 1e6, product_type: 1, tva_tx: 21.0, remise_percent: 0 });
+      if (copC1 > 0) lineas.push({ desc: `Copias COLOR — ${r.modelo} (SN: ${r.serial_number})`, qty: copC1, subprice: Math.round(impC1 / copC1 * 1e6) / 1e6, product_type: 1, tva_tx: 21.0, remise_percent: 0 });
+      if (!lineas.length) lineas.push({ desc: `Mínimo mensual — ${r.modelo} (SN: ${r.serial_number})`, qty: 1, subprice: total, product_type: 1, tva_tx: 21.0, remise_percent: 0 });
+      return {
+        serial_number: r.serial_number, modelo: r.modelo, empresa: r.empresa_nombre || '',
+        periodo, fecha_lectura: r.fecha_actual || null, fecha_anterior: r.fecha_anterior || null,
+        estado: 'facturable',
+        detalle: {
+          bn_anterior: Number(r.bn_anterior) || 0, bn_actual: Number(r.bn_actual) || 0, copias_bn: copBN,
+          c1_anterior: Number(r.c1_anterior) || 0, c1_actual: Number(r.c1_actual) || 0, copias_c1: copC1,
+          importe_bn: impBN, importe_c1: impC1, importe_total: total,
+        },
+        lineas_factura: lineas,
+      };
+    });
+
+    const resultados = [
+      ...(await Promise.all(printers.map((p) => this._resultadosParaConsumo(p, periodo)))).flat(),
+      ...facturablesOld,
+    ];
 
     const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(resultados, periodo);
     const excluidas = resultados.filter((r) => r.estado !== 'facturable');
 
+    // Impresoras con 0 copias en este periodo que SÍ estuvieron en el CSV del
+    // lote pero cuya fecha_lectura es histórica (timestamp antiguo → no aparecen
+    // en la query principal filtrada por DATE_FORMAT del periodo actual).
+    // La importación corregida persiste un registro 0-copias en consumos_mensuales
+    // con el periodo del lote para que puedan detectarse aquí.
+    const [sinLecturaPeriodoRows] = await this.pool.query(
+      `SELECT i.serial_number, i.modelo,
+              e.nombre_oficial          AS empresa_nombre,
+              cm.contador_bn_inicio     AS bn_anterior,
+              cm.contador_bn_fin        AS bn_actual,
+              rc_last.fecha_lectura     AS fecha_actual,
+              rc_prev.fecha_lectura     AS fecha_anterior
+       FROM consumos_mensuales cm
+       INNER JOIN impresoras i ON i.id = cm.impresora_id
+       LEFT  JOIN empresas e ON e.id = i.empresa_id
+       LEFT  JOIN registros_contadores rc_last
+         ON rc_last.impresora_id = cm.impresora_id
+        AND rc_last.fecha_lectura = (
+              SELECT MAX(r.fecha_lectura) FROM registros_contadores r
+              WHERE r.impresora_id = cm.impresora_id)
+       LEFT  JOIN registros_contadores rc_prev
+         ON rc_prev.impresora_id = cm.impresora_id
+        AND rc_prev.fecha_lectura = (
+              SELECT MAX(r.fecha_lectura) FROM registros_contadores r
+              WHERE r.impresora_id = cm.impresora_id
+                AND r.fecha_lectura < rc_last.fecha_lectura)
+       WHERE cm.periodo      = ?
+         AND cm.total_facturar = 0
+         AND cm.copias_bn_mes  = 0
+         AND i.activa = TRUE
+         AND NOT (cm.contador_bn_inicio > 0 AND cm.contador_bn_fin < cm.contador_bn_inicio)
+         AND NOT EXISTS (
+               SELECT 1 FROM registros_contadores r
+               WHERE r.impresora_id = cm.impresora_id
+                 AND DATE_FORMAT(r.fecha_lectura, '%Y-%m') = ?)
+       ORDER BY e.nombre_oficial, i.serial_number`,
+      [periodo, periodo],
+    );
+
+    const excluidasSinPeriodo = sinLecturaPeriodoRows.map((r) => ({
+      serial_number:  r.serial_number,
+      modelo:         r.modelo,
+      empresa:        r.empresa_nombre || '',
+      periodo,
+      fecha_lectura:  r.fecha_actual   || null,
+      fecha_anterior: r.fecha_anterior || null,
+      estado: 'sin_consumo',
+      detalle: {
+        bn_anterior: r.bn_anterior ?? 0,
+        bn_actual:   r.bn_actual   ?? 0,
+        msg: 'Sin lectura en el periodo. Última lectura de un periodo anterior.',
+      },
+      lineas_factura: [],
+    }));
+
+    // Contador_negativo con timestamp histórico: insertados por el import en
+    // consumos_mensuales con bn_fin < bn_inicio. Excluidos del sinLecturaPeriodoRows
+    // para no clasificarlos como sin_consumo.
+    const [contNegOldRows] = await this.pool.query(
+      `SELECT i.serial_number, i.modelo,
+              e.nombre_oficial AS empresa_nombre,
+              cm.contador_bn_inicio     AS bn_anterior,
+              cm.contador_bn_fin        AS bn_actual,
+              cm.contador_color1_inicio AS c1_anterior,
+              cm.contador_color1_fin    AS c1_actual,
+              rc_last.fecha_lectura     AS fecha_actual,
+              rc_prev.fecha_lectura     AS fecha_anterior
+       FROM consumos_mensuales cm
+       INNER JOIN impresoras i ON i.id = cm.impresora_id
+       LEFT  JOIN empresas e ON e.id = i.empresa_id
+       LEFT  JOIN registros_contadores rc_last
+         ON rc_last.impresora_id = cm.impresora_id
+        AND rc_last.fecha_lectura = (
+              SELECT MAX(r.fecha_lectura) FROM registros_contadores r WHERE r.impresora_id = cm.impresora_id)
+       LEFT  JOIN registros_contadores rc_prev
+         ON rc_prev.impresora_id = cm.impresora_id
+        AND rc_prev.fecha_lectura = (
+              SELECT MAX(r.fecha_lectura) FROM registros_contadores r
+              WHERE r.impresora_id = cm.impresora_id AND r.fecha_lectura < rc_last.fecha_lectura)
+       WHERE cm.periodo = ?
+         AND cm.total_facturar = 0
+         AND cm.copias_bn_mes = 0
+         AND cm.contador_bn_inicio > 0
+         AND cm.contador_bn_fin < cm.contador_bn_inicio
+         AND i.activa = TRUE
+         AND NOT EXISTS (
+               SELECT 1 FROM registros_contadores r
+               WHERE r.impresora_id = cm.impresora_id
+                 AND DATE_FORMAT(r.fecha_lectura, '%Y-%m') = ?)
+       ORDER BY e.nombre_oficial, i.serial_number`,
+      [periodo, periodo],
+    );
+
+    const excluidasContNegOld = contNegOldRows.map((r) => ({
+      serial_number:  r.serial_number,
+      modelo:         r.modelo,
+      empresa:        r.empresa_nombre || '',
+      periodo,
+      fecha_lectura:  r.fecha_actual   || null,
+      fecha_anterior: r.fecha_anterior || null,
+      estado: 'contador_negativo',
+      detalle: {
+        bn_anterior:     Number(r.bn_anterior) || 0,
+        bn_actual:       Number(r.bn_actual)   || 0,
+        copias_bn_bruto: (Number(r.bn_actual) || 0) - (Number(r.bn_anterior) || 0),
+        c1_anterior:     Number(r.c1_anterior) || 0,
+        c1_actual:       Number(r.c1_actual)   || 0,
+        msg: 'Reset total de contadores. 0 copias este mes.',
+      },
+      lineas_factura: [],
+    }));
+
+    // Inactivas con timestamp histórico: insertadas por el import en consumos_mensuales
+    // (activa=FALSE → sin_precio en el motor) pero sin lectura del periodo actual.
+    const [inactivasOldRows] = await this.pool.query(
+      `SELECT i.serial_number, i.modelo,
+              e.nombre_oficial AS empresa_nombre,
+              cm.contador_bn_fin        AS bn_actual,
+              cm.contador_color1_fin    AS c1_actual,
+              rc_last.fecha_lectura     AS fecha_actual
+       FROM consumos_mensuales cm
+       INNER JOIN impresoras i ON i.id = cm.impresora_id
+       LEFT  JOIN empresas e ON e.id = i.empresa_id
+       LEFT  JOIN registros_contadores rc_last
+         ON rc_last.impresora_id = cm.impresora_id
+        AND rc_last.fecha_lectura = (
+              SELECT MAX(r.fecha_lectura) FROM registros_contadores r WHERE r.impresora_id = cm.impresora_id)
+       WHERE cm.periodo = ?
+         AND cm.total_facturar = 0
+         AND cm.copias_bn_mes = 0
+         AND i.activa = FALSE
+         AND NOT EXISTS (
+               SELECT 1 FROM registros_contadores r
+               WHERE r.impresora_id = cm.impresora_id
+                 AND DATE_FORMAT(r.fecha_lectura, '%Y-%m') = ?)
+       ORDER BY e.nombre_oficial, i.serial_number`,
+      [periodo, periodo],
+    );
+
+    const inactivasOld = inactivasOldRows.map((r) => ({
+      empresa:        r.empresa_nombre || '',
+      serial_number:  r.serial_number,
+      modelo:         r.modelo,
+      estado:         'inactiva',
+      fecha_anterior: null,
+      fecha_lectura:  r.fecha_actual || null,
+      detalle: {
+        bn_anterior: 0,
+        bn_actual:   Number(r.bn_actual) || 0,
+        msg: 'Impresora marcada como inactiva en BD. Sin lectura en el periodo.',
+      },
+    }));
+
+    const resumen = this._resumen(resultados, facturas, empresasNoEncontradas);
+    resumen.total_inactivas = impresorasInactivas.length + inactivasOld.length;
+
     return {
       periodo,
       modo: 'produccion',
-      resumen: this._resumen(resultados, facturas, empresasNoEncontradas),
+      resumen,
       facturas_por_empresa: facturas,
-      impresoras_excluidas: excluidas,
+      impresoras_excluidas: [...excluidas, ...excluidasSinPeriodo, ...excluidasContNegOld],
+      impresoras_inactivas: [...impresorasInactivas, ...inactivasOld],
     };
   }
 

@@ -10,8 +10,7 @@
 // precios de la impresora y las líneas de contrato; el llamante se encarga
 // de obtenerlos (con el pool o con la conexión de una transacción).
 //
-// Replica exactamente el algoritmo de Python (facturacion.py): diferencia
-// contra la última lectura, gestión de negativos/resets/lecturas
+// Diferencia contra la última lectura, gestión de negativos/resets/lecturas 
 // desordenadas, reparto por porcentaje de participación, copias incluidas y
 // precio mínimo mensual.
 
@@ -255,7 +254,8 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
       r.empresa = o.empresa;
       r.estado = 'sin_consumo';
       r.detalle = { ...avisos, msg: 'Diferencia 0 copias.', contrato: o.contrato,
-        numero_contrato: o.numero_contrato, participacion: o.pct };
+        numero_contrato: o.numero_contrato, participacion: o.pct,
+        bn_anterior: bnAnterior, bn_actual: bnActual };
       resultados.push(r);
       continue;
     }
