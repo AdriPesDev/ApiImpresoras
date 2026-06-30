@@ -82,7 +82,7 @@ function crearHojaResumen(wb, resultado, meta) {
   // Anchos de columna (6 cols: A-F)
   ws.columns = [
     { width: 36 }, // A — etiquetas / Total impresoras
-    { width: 15 }, // B — Importe KPI (######) / parte de "Nº impresoras" merge
+    { width: 22 }, // B — Importe KPI / parte de "Nº impresoras" merge
     { width: 22 }, // C — Facturas creadas / parte de "Nº impresoras" merge
     { width: 22 }, // D — Facturas con error / parte de "Acción" merge
     { width: 28 }, // E — Sin empresa Dolibarr / parte de "Acción" merge
@@ -128,14 +128,14 @@ function crearHojaResumen(wb, resultado, meta) {
   // texto oscuro y borde medium del color oscuro. Fila 8 = hueco superior.
   const kpiBoxes = [
     { label: 'Total impresoras',        bg: C.navyLight,   fg: C.navy   },
-    { label: 'Importe total\nestimado', bg: C.orangeLight, fg: C.orange },
+    { label: 'Importe facturable\n(con Dolibarr)', bg: C.orangeLight, fg: C.orange },
     { label: 'Facturas creadas',        bg: C.greenLight,  fg: C.green  },
     { label: 'Facturas con error',      bg: C.redLight,    fg: C.red    },
     { label: 'Sin empresa Dolibarr',    bg: C.orangeLight, fg: C.orange },
     { label: 'Impresoras\ninactivas',   bg: C.purpleLight, fg: C.purple },
   ];
   const kpiValues = [
-    resumen.total_impresoras,
+    resumen.total_flota ?? resumen.total_impresoras,
     resumen.importe_total_estimado,
     resumen.facturas_creadas,
     resumen.facturas_error_envio || 0,
@@ -165,10 +165,8 @@ function crearHojaResumen(wb, resultado, meta) {
     vCell.font      = font({ size: 20, bold: true, color: k.fg });
     vCell.alignment = align('center');
     vCell.border    = border(k.fg, 'medium');
-    // El importe (col B=2) es numérico real pero la columna es estrecha → Excel
-    // muestra ###### (oculto pero grande y centrado).
     if (i === 1) {
-      vCell.numFmt = '#,##0.00';
+      vCell.numFmt = '"* * * * *"'; // valor enmascarado; visible en barra de fórmulas al hacer clic
     }
   });
 
@@ -178,7 +176,6 @@ function crearHojaResumen(wb, resultado, meta) {
 
   // Fila 13: Cabecera tabla categorías
   // — "Nº impresoras" fusiona B+C (así cabe el texto y la col B puede ser estrecha para el KPI)
-  // — "Acción recomendada" fusiona D+E
   const catHeaderDefs = [
     { col: 1, text: 'Categoría' },
     { col: 2, text: 'Nº impresoras', merge: [13, 2, 13, 3] },
@@ -231,6 +228,39 @@ function crearHojaResumen(wb, resultado, meta) {
     cC.alignment = align('left');
     cC.border    = border();
   });
+
+  // Fila extra: desglose del importe no facturable (por qué el importe del
+  // frontend puede diferir del KPI "Importe facturable" de arriba).
+  const importeSinEmpresa = resumen.importe_sin_empresa || 0;
+  if (importeSinEmpresa > 0) {
+    const noteRow = 14 + cats.length + 1; // una fila de margen tras la tabla
+    ws.getRow(noteRow - 1).height = 6;
+    ws.getRow(noteRow).height = 20;
+
+    ws.mergeCells(noteRow, 1, noteRow, 3);
+    const nA = ws.getCell(noteRow, 1);
+    nA.value     = '⚠ Sin empresa Dolibarr — importe no facturable';
+    nA.fill      = fill(C.redLight);
+    nA.font      = font({ bold: true, color: C.red });
+    nA.alignment = align('left');
+    nA.border    = border(C.red);
+
+    ws.mergeCells(noteRow, 4, noteRow, 6);
+    const nB = ws.getCell(noteRow, 4);
+    nB.value     = importeSinEmpresa;
+    nB.numFmt    = '"* * * * *"'; // valor enmascarado; visible en barra de fórmulas al hacer clic
+    nB.fill      = fill(C.redLight);
+    nB.font      = font({ size: 12, bold: true, color: C.red });
+    nB.alignment = align('right');
+    nB.border    = border(C.red);
+
+    ws.getRow(noteRow + 1).height = 14;
+    ws.mergeCells(noteRow + 1, 1, noteRow + 1, 6);
+    const nC = ws.getCell(noteRow + 1, 1);
+    nC.value     = 'Este importe NO está incluido en "Importe facturable". Corresponde a impresoras cuya empresa no tiene tercero en Dolibarr. Para facturarlo: crear el tercero en Dolibarr y volver a ejecutar la facturación.';
+    nC.font      = font({ size: 9, color: C.red });
+    nC.alignment = { horizontal: 'left', vertical: 'top', wrapText: true };
+  }
 }
 
 // ── HOJA DETALLE (Facturadas / Neg. ignorado / Sin consumo) ──────────────────

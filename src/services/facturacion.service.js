@@ -664,15 +664,61 @@ class FacturacionService {
       },
     }));
 
+    // Activas sin ninguna lectura NI consumo en el periodo: no aparecen en ninguna
+    // query anterior. Se añaden como sin_consumo para que consten en el Excel.
+    const [sinDatosRows] = await this.pool.query(
+      `SELECT i.serial_number, i.modelo,
+              e.nombre_oficial AS empresa_nombre,
+              rc_last.fecha_lectura AS ultima_lectura,
+              rc_last.copias_bn_total AS ultimo_bn
+       FROM impresoras i
+       LEFT JOIN empresas e ON e.id = i.empresa_id
+       LEFT JOIN registros_contadores rc_last
+         ON rc_last.impresora_id = i.id
+        AND rc_last.fecha_lectura = (
+              SELECT MAX(r.fecha_lectura) FROM registros_contadores r
+              WHERE r.impresora_id = i.id)
+       WHERE i.activa = TRUE
+         AND NOT EXISTS (
+               SELECT 1 FROM registros_contadores r
+               WHERE r.impresora_id = i.id
+                 AND DATE_FORMAT(r.fecha_lectura, '%Y-%m') = ?)
+         AND NOT EXISTS (
+               SELECT 1 FROM consumos_mensuales cm
+               WHERE cm.impresora_id = i.id
+                 AND cm.periodo = ?)
+       ORDER BY e.nombre_oficial, i.serial_number`,
+      [periodo, periodo],
+    );
+
+    const sinDatosPeriodo = sinDatosRows.map((r) => ({
+      serial_number:  r.serial_number,
+      modelo:         r.modelo,
+      empresa:        r.empresa_nombre || '',
+      periodo,
+      fecha_lectura:  null,
+      fecha_anterior: r.ultima_lectura || null,
+      estado: 'sin_consumo',
+      detalle: {
+        bn_anterior: r.ultimo_bn != null ? Number(r.ultimo_bn) : 0,
+        bn_actual:   r.ultimo_bn != null ? Number(r.ultimo_bn) : 0,
+        msg: 'No se importó ningún contador este periodo.',
+      },
+      lineas_factura: [],
+    }));
+
+    const [[{ total_flota }]] = await this.pool.query('SELECT COUNT(*) AS total_flota FROM impresoras');
+
     const resumen = this._resumen(resultados, facturas, empresasNoEncontradas);
     resumen.total_inactivas = impresorasInactivas.length + inactivasOld.length;
+    resumen.total_flota     = Number(total_flota);
 
     return {
       periodo,
       modo: 'produccion',
       resumen,
       facturas_por_empresa: facturas,
-      impresoras_excluidas: [...excluidas, ...excluidasSinPeriodo, ...excluidasContNegOld],
+      impresoras_excluidas: [...excluidas, ...excluidasSinPeriodo, ...excluidasContNegOld, ...sinDatosPeriodo],
       impresoras_inactivas: [...impresorasInactivas, ...inactivasOld],
     };
   }
@@ -740,7 +786,25 @@ class FacturacionService {
       importe_total_estimado:   Math.round(
         facturas.reduce((s, f) => s + f.importe_total, 0) * 100,
       ) / 100,
+      // Importe de printers sin empresa Dolibarr: no entra en facturas pero sí
+      // en consumos_mensuales → explica por qué la página muestra un total mayor.
+      importe_sin_empresa: Math.round(
+        resultados
+          .filter((r) => r.estado === 'sin_empresa_dolibarr')
+          .reduce((s, r) => s + (r.detalle?.importe_total || 0), 0) * 100,
+      ) / 100,
     };
+  }
+
+  async getOrigenCsvPeriodo(periodo) {
+    const [rows] = await this.pool.query(
+      `SELECT nombre_archivo FROM historial_importaciones
+       WHERE DATE_FORMAT(fecha_importacion, '%Y-%m') = ?
+         AND estado IN ('completado', 'parcial')
+       ORDER BY fecha_importacion DESC LIMIT 1`,
+      [periodo],
+    );
+    return rows[0]?.nombre_archivo || null;
   }
 }
 

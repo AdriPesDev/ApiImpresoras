@@ -51,8 +51,9 @@ class FacturacionController {
           }
         }
 
+        const origenCsv = await this.facturacionService.getOrigenCsvPeriodo(periodo);
         excelInfo = await generarReporteExcel(analisis, {
-          origenCsv: req.body.origen_csv || 'N/D',
+          origenCsv: origenCsv || 'N/D',
           modo: 'produccion',
           idsPorSerial,
         });

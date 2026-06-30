@@ -125,6 +125,22 @@ class ContratoController {
 
   // ── Sub-resource: lineas_fijas ────────────────
 
+  // GET /api/contratos/lineas-fijas  (todas las líneas fijas activas, para carga bulk)
+  getAllLineasFijas = async (req, res, next) => {
+    try {
+      const lineas = await this.contratoModel.getAllLineasFijas();
+      res.json(lineas);
+    } catch (error) { next(error); }
+  };
+
+  // GET /api/contratos/:id/lineas-fijas
+  getLineasFijas = async (req, res, next) => {
+    try {
+      const lineas = await this.contratoModel.getLineasFijas(req.params.id);
+      res.json(lineas);
+    } catch (error) { next(error); }
+  };
+
   // POST /api/contratos/:id/lineas-fijas
   addLineaFija = async (req, res, next) => {
     try {

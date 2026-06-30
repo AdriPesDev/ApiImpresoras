@@ -13,7 +13,7 @@
 // (facturacion.service.js::_getContrato) ya operan sobre el esquema singular.
 //
 // La API de contratos expone una "línea plana" (cabecera + línea en una sola fila)
-// porque es lo que consume el frontend (Contratos.jsx agrupa por numero_contrato).
+// porque es lo que consume el frontend (Contratos.jsx agrupa por empresa_id).
 // El `id` de cada elemento es el id de la fila de `contrato_impresoras` (ci.id).
 // Internamente se mapea el naming del frontend (copias_colorN_incluidas) al de la
 // tabla (copias_cN_incluidas).
@@ -74,29 +74,29 @@ class ContratoModel {
   // ── Lectura ───────────────────────────────────────────────────────────────
 
   async findAll(filtros = {}) {
-    let query = this._selectBase() + " WHERE 1=1";
-    const params = [];
+    let q = this._selectBase() + " WHERE 1=1";
+    const p = [];
 
     if (filtros.impresora_id) {
-      query += " AND ci.impresora_id = ?";
-      params.push(filtros.impresora_id);
+      q += " AND ci.impresora_id = ?";
+      p.push(filtros.impresora_id);
     }
     if (filtros.empresa_id) {
-      query += " AND ci.empresa_id = ?";
-      params.push(filtros.empresa_id);
+      q += " AND ci.empresa_id = ?";
+      p.push(filtros.empresa_id);
     }
     if (filtros.activo !== undefined && filtros.activo !== null) {
-      query += " AND ci.activo = ?";
-      params.push(filtros.activo ? 1 : 0);
+      q += " AND ci.activo = ?";
+      p.push(filtros.activo ? 1 : 0);
     }
     if (filtros.buscar) {
-      query += " AND (c.numero_contrato LIKE ? OR e.nombre_oficial LIKE ? OR i.serial_number LIKE ?)";
+      q += " AND (c.numero_contrato LIKE ? OR e.nombre_oficial LIKE ? OR i.serial_number LIKE ?)";
       const like = `%${filtros.buscar}%`;
-      params.push(like, like, like);
+      p.push(like, like, like);
     }
 
-    query += " ORDER BY c.numero_contrato, ci.id";
-    const [rows] = await this.pool.query(query, params);
+    q += " ORDER BY e.nombre_oficial, i.serial_number";
+    const [rows] = await this.pool.query(q, p);
     return rows;
   }
 
@@ -443,6 +443,13 @@ class ContratoModel {
       [lf_id],
     );
     return result.affectedRows > 0;
+  }
+
+  async getAllLineasFijas() {
+    const [rows] = await this.pool.query(
+      `SELECT * FROM contrato_lineas_fijas WHERE activo = TRUE ORDER BY contrato_id, orden, id`,
+    );
+    return rows;
   }
 
   // ── Utilidades para otros módulos (esquema singular) ──────────────────────
