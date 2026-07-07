@@ -30,6 +30,7 @@ const ImportacionesController = require("./controllers/importaciones.controller"
 const FacturacionController = require("./controllers/facturacion.controller");
 const DolibarrController = require("./controllers/dolibarr.controller");
 const ImportarController = require("./controllers/importar.controller");
+const DocumentoContratoController = require("./controllers/documentoContrato.controller");
 
 // Route factories
 const createAuthRoutes = require("./routes/auth.routes");
@@ -92,6 +93,7 @@ const importacionesController = new ImportacionesController(pool);
 const facturacionController = new FacturacionController(pool);
 const dolibarrController = new DolibarrController();
 const importarController = new ImportarController(pool);
+const documentoContratoController = new DocumentoContratoController();
 
 // ── Rutas públicas (sin auth) ──────────────────────
 app.use("/api/auth", createAuthRoutes(authController, jwtMiddleware));
@@ -105,6 +107,9 @@ app.use("/api/impresoras", createImpresoraRoutes(impresoraController));
 app.use("/api/registros", createRegistroRoutes(registroController));
 app.use("/api/consumos", createConsumoRoutes(consumoController));
 app.use("/api/dashboard", createDashboardRoutes(dashboardController));
+app.post("/api/contratos/generar-documento", requireRole("admin"), (req, res) =>
+  documentoContratoController.generar(req, res),
+);
 app.use("/api/contratos", createContratoRoutes(contratoController));
 app.use(
   "/api/importaciones",
