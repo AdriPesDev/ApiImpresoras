@@ -1,15 +1,57 @@
-const jwt = require('jsonwebtoken');
+const jwt = require("jsonwebtoken");
+const { tryPortalAuth } = require("../../shared-auth/verifyPortalToken");
+const { pool } = require("../config/database");
 
-const JWT_SECRET = process.env.JWT_SECRET || 'cambiar_este_secreto_en_produccion';
+const JWT_SECRET =
+  process.env.JWT_SECRET || "cambiar_este_secreto_en_produccion";
 
-// ── Middleware JWT ──────────────────────────────────
-// Valida el token Bearer y adjunta req.user con { id, username, rol }.
-// Se aplica a todas las rutas /api/* excepto /api/auth/login y /api/health.
-const jwtMiddleware = (req, res, next) => {
+// ── Auto-provisioning (MySQL) ─────────────────────
+// Si un usuario del portal entra por primera vez, crea un registro local.
+// NOTA: ajusta el nombre de la tabla si no se llama `usuarios`.
+const USERS_TABLE = "usuarios";
+
+async function ensureLocalUser(portalUser) {
+  const [existing] = await pool.query(
+    `SELECT id, rol FROM ${USERS_TABLE} WHERE email = ?`,
+    [portalUser.email],
+  );
+
+  if (existing.length > 0) {
+    const local = existing[0];
+    if (local.rol !== portalUser.rol) {
+      await pool.query(`UPDATE ${USERS_TABLE} SET rol = ? WHERE id = ?`, [
+        portalUser.rol,
+        local.id,
+      ]);
+    }
+    return { ...portalUser, id: local.id, username: portalUser.nombre };
+  }
+
+  const [result] = await pool.query(
+    `INSERT INTO ${USERS_TABLE} (username, email, password, rol, activo) VALUES (?, ?, ?, ?, 1)`,
+    [portalUser.nombre, portalUser.email, "!sso-only!", portalUser.rol],
+  );
+  return { ...portalUser, id: result.insertId, username: portalUser.nombre };
+}
+
+// ── Middleware JWT (con portal SSO) ────────────────
+const jwtMiddleware = async (req, res, next) => {
+  // 1) Intentar portal SSO (cookie np_session o Bearer RS256)
+  const portal = tryPortalAuth(req);
+  if (portal.valid) {
+    try {
+      req.user = await ensureLocalUser(portal.user);
+      return next();
+    } catch (err) {
+      console.error("[sso] Error en auto-provisioning:", err.message);
+      return res.status(500).json({ error: "Error al vincular usuario SSO" });
+    }
+  }
+
+  // 2) Intentar auth local (JWT HS256)
   const header = req.headers.authorization;
-
-  if (!header || !header.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Token no proporcionado.' });
+  if (!header || !header.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Token no proporcionado." });
   }
 
   const token = header.slice(7);
@@ -19,33 +61,48 @@ const jwtMiddleware = (req, res, next) => {
     req.user = { id: decoded.id, username: decoded.username, rol: decoded.rol };
     next();
   } catch (err) {
-    if (err.name === 'TokenExpiredError') {
-      return res.status(401).json({ error: 'Token expirado.' });
+    if (err.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "Token expirado." });
     }
-    return res.status(401).json({ error: 'Token inválido.' });
+    return res.status(401).json({ error: "Token inválido." });
   }
 };
 
-// ── Middleware de roles ────────────────────────────
-// Uso: requireRole('admin') o requireRole(['admin', 'viewer'])
+// ── Middleware de roles (sin cambios) ──────────────
 const requireRole = (roles) => {
   const allowed = Array.isArray(roles) ? roles : [roles];
   return (req, res, next) => {
     if (!req.user || !allowed.includes(req.user.rol)) {
-      return res.status(403).json({ error: 'No tienes permisos para esta acción.' });
+      return res
+        .status(403)
+        .json({ error: "No tienes permisos para esta acción." });
     }
     next();
   };
 };
 
-// ── Middleware legacy API key (compatibilidad) ─────
-// Acepta x-api-key como alternativa a JWT (para scripts, cron, etc.)
-const apiKeyMiddleware = (req, res, next) => {
-  const apiKey = req.headers['x-api-key'];
+// ── API key legacy (con portal SSO) ────────────────
+const apiKeyMiddleware = async (req, res, next) => {
+  // Portal SSO tiene prioridad (cookie)
+  const portal = tryPortalAuth(req);
+  if (portal.valid) {
+    try {
+      req.user = await ensureLocalUser(portal.user);
+      return next();
+    } catch (err) {
+      console.error("[sso] Error en auto-provisioning:", err.message);
+      return res.status(500).json({ error: "Error al vincular usuario SSO" });
+    }
+  }
+
+  // API key
+  const apiKey = req.headers["x-api-key"];
   if (apiKey && apiKey === process.env.API_KEY) {
-    req.user = { id: 0, username: 'api-key', rol: 'admin' };
+    req.user = { id: 0, username: "api-key", rol: "admin" };
     return next();
   }
+
+  // JWT local
   return jwtMiddleware(req, res, next);
 };
 
