@@ -5,6 +5,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const dotenv = require("dotenv");
 const bodyParser = require("body-parser");
+const cookieParser = require("cookie-parser");
 
 dotenv.config();
 
