@@ -1,10 +1,10 @@
+const path = require("node:path");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const dotenv = require("dotenv");
 const bodyParser = require("body-parser");
-const cookieParser = require("cookie-parser");
 
 dotenv.config();
 
@@ -65,6 +65,9 @@ app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
 // Rate limiting (descomentar en producción)
 // app.use('/api/', limiter);
 // app.use('/api/facturacion/ejecutar', writeLimiter);
+
+// ── Archivos estáticos: reportes Excel generados ──
+app.use("/exports", express.static(path.join(__dirname, "..", "exports")));
 
 // ── Health check (público) ─────────────────────────
 app.get("/api/health", (req, res) => {

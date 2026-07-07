@@ -1,5 +1,6 @@
 // src/controllers/importaciones.controller.js
 const ImportacionModel = require("../models/importaciones.model");
+const { clampInt } = require("../utils/validators");
 
 class ImportacionesController {
   constructor(pool) {
@@ -9,8 +10,8 @@ class ImportacionesController {
   // GET /api/importaciones - Obtener historial de importaciones
   getHistorial = async (req, res, next) => {
     try {
-      const limit = req.query.limit || 50;
-      const offset = req.query.offset || 0;
+      const limit = clampInt(req.query.limit, 50, 1, 1000);
+      const offset = clampInt(req.query.offset, 0, 0);
 
       const historial = await this.importacionModel.getHistorial(limit, offset);
       const total = await this.importacionModel.contarImportaciones();
@@ -18,8 +19,8 @@ class ImportacionesController {
       res.json({
         data: historial,
         total: total,
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit,
+        offset,
       });
     } catch (error) {
       console.error("Error en getHistorial:", error);

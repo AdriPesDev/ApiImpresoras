@@ -12,7 +12,7 @@ class ImpresoraModel {
     `;
     const params = [];
 
-    if (filtros.activa !== undefined) {
+    if (filtros.activa !== undefined && filtros.activa !== null) {
       query += " AND i.activa = ?";
       params.push(filtros.activa);
     }

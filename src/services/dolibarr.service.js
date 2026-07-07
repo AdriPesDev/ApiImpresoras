@@ -48,6 +48,11 @@ class DolibarrService {
   }
 
   async buscarTercero(nombre) {
+    if (process.env.DOLIBARR_MOCK === 'true') {
+      const fake = { id: 99999, nom: nombre, _source: 'mock' };
+      this._cache.set(nombre, fake);
+      return fake;
+    }
     if (this._cache.has(nombre)) return this._cache.get(nombre);
 
     try {
@@ -99,6 +104,11 @@ class DolibarrService {
   }
 
   async crearFactura(payload) {
+    if (process.env.DOLIBARR_MOCK === 'true') {
+      const fakeId = Math.floor(Math.random() * 90000) + 10000;
+      console.log(`[DOLIBARR_MOCK] crearFactura simulada → id ${fakeId} socid=${payload.socid}`);
+      return fakeId;
+    }
     return this.post('invoices', payload);
   }
 

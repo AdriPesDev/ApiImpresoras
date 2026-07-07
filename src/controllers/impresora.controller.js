@@ -1,4 +1,5 @@
 const ImpresoraModel = require("../models/impresora.model");
+const { clampInt, parseBool } = require("../utils/validators");
 
 class ImpresoraController {
   constructor(pool) {
@@ -8,9 +9,9 @@ class ImpresoraController {
   getAll = async (req, res, next) => {
     try {
       const filtros = {
-        activa: req.query.activa ? req.query.activa === "true" : undefined,
+        activa: parseBool(req.query.activa, undefined),
         empresa_id: req.query.empresa_id
-          ? parseInt(req.query.empresa_id)
+          ? clampInt(req.query.empresa_id, undefined, 1)
           : undefined,
         modelo: req.query.modelo,
       };
@@ -40,7 +41,7 @@ class ImpresoraController {
   getRegistros = async (req, res, next) => {
     try {
       const { id } = req.params;
-      const { limite = 10 } = req.query;
+      const limite = clampInt(req.query.limite, 10, 1, 1000);
 
       const impresora = await this.impresoraModel.findById(id);
       if (!impresora) {
@@ -49,7 +50,7 @@ class ImpresoraController {
 
       const registros = await this.impresoraModel.getUltimosRegistros(
         id,
-        parseInt(limite),
+        limite,
       );
       res.json(registros);
     } catch (error) {

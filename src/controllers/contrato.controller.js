@@ -1,4 +1,5 @@
 const ContratoModel = require('../models/contrato.model');
+const { parseBool } = require('../utils/validators');
 
 class ContratoController {
   constructor(pool) {
@@ -9,7 +10,7 @@ class ContratoController {
   getAll = async (req, res, next) => {
     try {
       const filtros = {
-        activo: req.query.activo === undefined ? undefined : req.query.activo === 'true',
+        activo: parseBool(req.query.activo, undefined),
         empresa_id: req.query.empresa_id ? Number.parseInt(req.query.empresa_id, 10) : undefined,
         buscar: req.query.buscar || undefined,
       };
@@ -123,6 +124,22 @@ class ContratoController {
   };
 
   // ── Sub-resource: lineas_fijas ────────────────
+
+  // GET /api/contratos/lineas-fijas  (todas las líneas fijas activas, para carga bulk)
+  getAllLineasFijas = async (req, res, next) => {
+    try {
+      const lineas = await this.contratoModel.getAllLineasFijas();
+      res.json(lineas);
+    } catch (error) { next(error); }
+  };
+
+  // GET /api/contratos/:id/lineas-fijas
+  getLineasFijas = async (req, res, next) => {
+    try {
+      const lineas = await this.contratoModel.getLineasFijas(req.params.id);
+      res.json(lineas);
+    } catch (error) { next(error); }
+  };
 
   // POST /api/contratos/:id/lineas-fijas
   addLineaFija = async (req, res, next) => {
