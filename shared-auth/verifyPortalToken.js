@@ -19,12 +19,17 @@ function extractPortalToken(req) {
   return h.startsWith('Bearer ') ? h.slice(7) : null;
 }
 
+// Devuelve { valid: true, user } o { valid: false }. El caso mustChange devuelve
+// { valid: false, mustChange: true }: NO basta con decir que no vale, porque el
+// middleware caería al login local (y en apiKeyMiddleware, a la rama de API key).
+// Quien llama tiene que cortocircuitar con un 403 antes de ese fallback.
 function tryPortalAuth(req) {
   const token = extractPortalToken(req);
   if (!token) return { valid: false };
   try {
     const claims = verifyPortalToken(token);
     if (claims.type !== 'access') return { valid: false };
+    if (claims.mustChange) return { valid: false, mustChange: true };
     const satelliteRole = claims.apps?.[APP_SLUG];
     if (!satelliteRole) return { valid: false };
     return {

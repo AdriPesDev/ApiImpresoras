@@ -35,9 +35,21 @@ async function ensureLocalUser(portalUser) {
 }
 
 // ── Middleware JWT (con portal SSO) ────────────────
+// Corta antes del fallback local: si solo devolviéramos 401/nada, el usuario del
+// portal con contraseña temporal caería al login local (o a la API key) y entraría.
+const rejectIfMustChange = (portal, res) => {
+  if (!portal.mustChange) return false;
+  res.status(403).json({
+    error: "Debes cambiar tu contraseña en el portal",
+    code: "MUST_CHANGE_PASSWORD",
+  });
+  return true;
+};
+
 const jwtMiddleware = async (req, res, next) => {
   // 1) Intentar portal SSO (cookie np_session o Bearer RS256)
   const portal = tryPortalAuth(req);
+  if (rejectIfMustChange(portal, res)) return;
   if (portal.valid) {
     try {
       req.user = await ensureLocalUser(portal.user);
@@ -85,6 +97,7 @@ const requireRole = (roles) => {
 const apiKeyMiddleware = async (req, res, next) => {
   // Portal SSO tiene prioridad (cookie)
   const portal = tryPortalAuth(req);
+  if (rejectIfMustChange(portal, res)) return;
   if (portal.valid) {
     try {
       req.user = await ensureLocalUser(portal.user);
