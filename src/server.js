@@ -45,6 +45,7 @@ const createFacturacionRoutes = require("./routes/facturacion.routes");
 const createDolibarrRoutes = require("./routes/dolibarr.routes");
 
 const app = express();
+app.set("trust proxy", 1);
 const PORT = process.env.PORT || 4000;
 
 // ── Global middleware ──────────────────────────────
