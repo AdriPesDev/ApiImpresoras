@@ -9,16 +9,23 @@
  *   node src/scripts/limpiar-importacion.js --confirmar      (borra realmente)
  *   node src/scripts/limpiar-importacion.js --fecha 2026-06-24   (otra fecha, default=ayer)
  *   node src/scripts/limpiar-importacion.js --periodo 2026-06    (para consumos_mensuales)
+ *   node src/scripts/limpiar-importacion.js --confirmar --incluir-facturadas
+ *                                  (además borra lo ya facturado — PELIGRO, ver abajo)
  *
  * Qué borra:
  *   1. historial_importaciones  → registros importados en la fecha indicada
  *                                  (permite re-importar el mismo fichero CSV)
  *   2. logs_facturacion         → logs del periodo (para poder re-facturar en mock)
- *   3. consumos_mensuales       → TODAS las filas del periodo (facturado=0 y facturado=1)
+ *   3. consumos_mensuales       → filas del periodo con facturado=0
  *                                  (permite recalcular consumos al re-importar)
  *   4. registros_contadores     → ultima lectura de cada impresora si está
  *                                  dentro del periodo indicado
  *                                  (permite que la re-importación registre lecturas limpias)
+ *
+ * Por defecto, las filas facturado=1 (facturas ya emitidas en Dolibarr) y las
+ * lecturas de las impresoras que las respaldan quedan PROTEGIDAS: nunca se
+ * borran sin pasar --incluir-facturadas. Sin esa protección, este script podía
+ * borrar el rastro local de facturas reales ya enviadas a Dolibarr.
  */
 
 require('dotenv').config();
@@ -27,6 +34,7 @@ const mysql = require('mysql2/promise');
 // ── Argumentos ────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const confirmar = args.includes('--confirmar');
+const incluirFacturadas = args.includes('--incluir-facturadas');
 
 const fechaIdx = args.indexOf('--fecha');
 let fechaImportacion;
@@ -100,26 +108,44 @@ async function main() {
     );
     const nLogs = logs[0].cnt;
     console.log(`🧾 logs_facturacion (periodo ${periodo}):`);
-    console.log(`   → ${nLogs} fila(s) se borrarán.\n`);
+    if (incluirFacturadas) {
+      console.log(`   → ${nLogs} fila(s) se borrarán.\n`);
+    } else {
+      console.log(`   → ${nLogs} fila(s) PROTEGIDAS (log de facturas reales). Usa --incluir-facturadas para borrarlas.\n`);
+    }
 
-    // ── 3. consumos_mensuales (facturado=0 y facturado=1) ─────────────────
+    // ── 3. consumos_mensuales: solo facturado=0 se borra por defecto ──────
     const [consumos] = await pool.query(
       `SELECT
          SUM(facturado = 0) AS pendientes,
-         SUM(facturado = 1) AS facturados,
-         COUNT(*)           AS total
+         SUM(facturado = 1) AS facturados
        FROM consumos_mensuales WHERE periodo = ?`,
       [periodo],
     );
-    const nConsumos = consumos[0].total;
-    console.log(`📊 consumos_mensuales (periodo ${periodo}, todos):`);
-    console.log(`   • Pendientes (facturado=0): ${consumos[0].pendientes}`);
-    console.log(`   • Ya facturados (facturado=1): ${consumos[0].facturados}`);
-    console.log(`   → ${nConsumos} fila(s) se borrarán.\n`);
+    const nPendientes = consumos[0].pendientes || 0;
+    const nFacturados = consumos[0].facturados || 0;
+    console.log(`📊 consumos_mensuales (periodo ${periodo}):`);
+    console.log(`   • Pendientes (facturado=0): ${nPendientes} → se borrarán.`);
+    console.log(`   • Ya facturados (facturado=1): ${nFacturados} → ${incluirFacturadas ? 'se borrarán (--incluir-facturadas)' : 'PROTEGIDAS, no se borran'}.\n`);
 
-    // ── 3. registros_contadores: última lectura en el periodo ──────────────
-    const [regsPreview] = await pool.query(
-      `SELECT rc.id, i.serial_number, i.modelo, rc.fecha_lectura
+    // Impresoras con un consumo ya facturado en este periodo: sus lecturas
+    // tampoco se tocan salvo --incluir-facturadas (evitan borrar la evidencia
+    // de una factura real ya emitida en Dolibarr).
+    const [facturadasRows] = await pool.query(
+      `SELECT cm.impresora_id, i.serial_number
+       FROM consumos_mensuales cm
+       INNER JOIN impresoras i ON i.id = cm.impresora_id
+       WHERE cm.periodo = ? AND cm.facturado = 1`,
+      [periodo],
+    );
+    const impresorasProtegidas = new Set(facturadasRows.map((r) => r.impresora_id));
+    if (facturadasRows.length && !incluirFacturadas) {
+      console.log(`🔒 Impresoras con factura real en ${periodo} (lecturas protegidas): ${facturadasRows.map((r) => r.serial_number).join(', ')}\n`);
+    }
+
+    // ── 4. registros_contadores: última lectura en el periodo ──────────────
+    const [regsAll] = await pool.query(
+      `SELECT rc.id, rc.impresora_id, i.serial_number, i.modelo, rc.fecha_lectura
        FROM registros_contadores rc
        INNER JOIN impresoras i ON i.id = rc.impresora_id
        INNER JOIN (
@@ -132,6 +158,10 @@ async function main() {
        ORDER BY i.serial_number`,
       [periodo],
     );
+    const regsPreview = incluirFacturadas
+      ? regsAll
+      : regsAll.filter((r) => !impresorasProtegidas.has(r.impresora_id));
+    const regsProtegidos = regsAll.length - regsPreview.length;
 
     console.log(`🖨️  registros_contadores (última lectura por impresora en periodo ${periodo}):`);
     if (regsPreview.length === 0) {
@@ -143,8 +173,12 @@ async function main() {
       if (regsPreview.length > 10) {
         console.log(`   … y ${regsPreview.length - 10} más`);
       }
-      console.log(`   → ${regsPreview.length} fila(s) se borrarán.\n`);
+      console.log(`   → ${regsPreview.length} fila(s) se borrarán.`);
     }
+    if (regsProtegidos > 0) {
+      console.log(`   (${regsProtegidos} lectura(s) excluida(s) por pertenecer a impresoras con factura real)`);
+    }
+    console.log('');
 
     // ── Resumen final ──────────────────────────────────────────────────────
     if (!confirmar) {
@@ -171,21 +205,27 @@ async function main() {
         console.log(`✅ historial_importaciones: ${historial.length} fila(s) borrada(s).`);
       }
 
-      // 2. logs_facturacion
-      const [delLogs] = await conn.query(
-        `DELETE FROM logs_facturacion WHERE periodo = ?`,
-        [periodo],
-      );
-      console.log(`✅ logs_facturacion: ${delLogs.affectedRows} fila(s) borrada(s).`);
+      // 2. logs_facturacion (protegido salvo --incluir-facturadas)
+      if (incluirFacturadas) {
+        const [delLogs] = await conn.query(
+          `DELETE FROM logs_facturacion WHERE periodo = ?`,
+          [periodo],
+        );
+        console.log(`✅ logs_facturacion: ${delLogs.affectedRows} fila(s) borrada(s).`);
+      } else {
+        console.log(`⏭️  logs_facturacion: 0 fila(s) borrada(s) (protegido, usa --incluir-facturadas).`);
+      }
 
-      // 3. consumos_mensuales (todos, incluido facturado=1)
+      // 3. consumos_mensuales (facturado=0 siempre; facturado=1 solo con --incluir-facturadas)
       const [delConsumos] = await conn.query(
-        `DELETE FROM consumos_mensuales WHERE periodo = ?`,
+        incluirFacturadas
+          ? `DELETE FROM consumos_mensuales WHERE periodo = ?`
+          : `DELETE FROM consumos_mensuales WHERE periodo = ? AND facturado = 0`,
         [periodo],
       );
       console.log(`✅ consumos_mensuales: ${delConsumos.affectedRows} fila(s) borrada(s).`);
 
-      // 3. registros_contadores (última lectura en el periodo)
+      // 4. registros_contadores (regsPreview ya excluye las protegidas)
       if (regsPreview.length > 0) {
         const regIds = regsPreview.map((r) => r.id);
         const [delRegs] = await conn.query(

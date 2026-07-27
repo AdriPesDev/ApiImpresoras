@@ -34,13 +34,29 @@ DB_NAME=control_impresoras
 DOLIBARR_URL=https://tu-dolibarr.com/api/index.php
 DOLIBARR_API_KEY=tu_api_key_dolibarr
 
-# Seguridad (solo requerido en producción)
+# JWT (autenticación local de usuarios)
+JWT_SECRET=cambia_esto_por_un_secreto_largo_y_aleatorio
+JWT_EXPIRES_IN=8h
+
+# SSO con el portal Nethive (opcional; sin esto el SSO falla en silencio y
+# cae a login local / x-api-key)
+PORTAL_PUBLIC_KEY=clave_publica_rsa_del_portal
+PORTAL_ISSUER=nethive-portal
+PORTAL_APP_SLUG=impresoras
+
+# Seguridad (API key legacy, para scripts/cron que no usan JWT)
 API_KEY=tu_api_key_interna
 CORS_ORIGIN=https://tu-frontend.com
 ```
 
-> En `NODE_ENV=development` la autenticación por `x-api-key` está desactivada.  
-> En producción, todas las rutas `/api/` requieren la cabecera `x-api-key`.
+> Todas las rutas `/api/` (salvo `/api/health` y `POST /api/auth/login`) requieren autenticación,
+> resuelta en este orden: **1)** sesión SSO del portal (cookie `np_session` o `Authorization: Bearer`
+> con JWT RS256 del portal), **2)** cabecera `x-api-key` (legacy), **3)** JWT local (`Authorization: Bearer`
+> emitido por `/api/auth/login`). Esto aplica en cualquier `NODE_ENV`, no solo en producción.  
+> Además, `/api/facturacion/*`, `/api/dolibarr/*`, `POST /api/contratos/generar-documento` y
+> `POST /api/registros/importar` requieren rol `admin`.  
+> Si el usuario del portal tiene una contraseña temporal sin cambiar, la API corta con
+> `403 { code: "MUST_CHANGE_PASSWORD" }` antes de caer a los demás métodos de auth.
 
 ## Arranque
 
@@ -63,6 +79,15 @@ El servidor arranca en `http://localhost:3000` por defecto.
 | Método | Ruta | Descripción |
 |--------|------|-------------|
 | GET | `/api/health` | Estado del servidor |
+
+---
+
+### Autenticación `/api/auth`
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| POST | `/api/auth/login` | Login local. Público. Devuelve `{ token, user: { id, username, rol } }` |
+| GET | `/api/auth/me` | Usuario autenticado actual (sesión SSO del portal o JWT local) |
 
 ---
 
@@ -136,6 +161,10 @@ El servidor arranca en `http://localhost:3000` por defecto.
 | PUT | `/api/contratos/:id` | Actualizar contrato |
 | PATCH | `/api/contratos/:id/activo` | Activar / desactivar contrato |
 | DELETE | `/api/contratos/:id` | Eliminar contrato |
+| GET | `/api/contratos/lineas-fijas` | Listar todas las líneas fijas (todos los contratos) |
+| POST | `/api/contratos/generar-documento` | Generar contrato en Word (`.docx`) a partir de plantilla. Solo `admin` |
+
+**Body POST `/generar-documento`:** `tipoPlantilla` (`3colores`\|`1color`\|`bn`), `incluirObservaciones`, datos de empresa/firmante e impresoras. Devuelve el `.docx` como descarga (no persiste nada en BD). Las plantillas están en `templates/`.
 
 **Sub-recurso: impresoras del contrato**
 
@@ -149,6 +178,7 @@ El servidor arranca en `http://localhost:3000` por defecto.
 
 | Método | Ruta | Descripción |
 |--------|------|-------------|
+| GET | `/api/contratos/:id/lineas-fijas` | Listar líneas fijas del contrato |
 | POST | `/api/contratos/:id/lineas-fijas` | Añadir línea fija |
 | PUT | `/api/contratos/:id/lineas-fijas/:lf_id` | Actualizar línea fija |
 | DELETE | `/api/contratos/:id/lineas-fijas/:lf_id` | Eliminar línea fija |
@@ -192,6 +222,7 @@ El servidor arranca en `http://localhost:3000` por defecto.
 | GET | `/api/registros/por-mes` | Agrupación mensual |
 | POST | `/api/registros` | Crear registro de lectura |
 | POST | `/api/registros/bulk` | Crear múltiples registros (importación Kyofleet) |
+| POST | `/api/registros/importar` | Importar CSV Kyofleet ya parseado. Solo `admin`. Body: `{ impresoras, nombre_archivo, contenido_csv, dry_run }`. Con `dry_run: true` solo compara contra lecturas anteriores (preview), no persiste nada |
 
 **Body POST:**
 ```json
@@ -215,13 +246,16 @@ El servidor arranca en `http://localhost:3000` por defecto.
 | GET | `/api/consumos/:id` | Obtener consumo por ID |
 | GET | `/api/consumos/pendientes` | Consumos sin facturar |
 | GET | `/api/consumos/resumen` | Resumen agregado |
+| PATCH | `/api/consumos/cerrar-periodo` | Cerrar un periodo (`{ periodo: "YYYY-MM" }`) |
 | PUT | `/api/consumos/:id/facturar` | Marcar consumo como facturado |
 
 ---
 
 ### Facturación `/api/facturacion`
 
-El flujo normal es: **preview → revisar → ejecutar**.
+El flujo normal es: **importar CSV → consumos pendientes → preview → revisar → ejecutar**.
+Ambos endpoints requieren rol `admin` y operan sobre consumos ya calculados en `consumos_mensuales`
+(ver `/api/registros/importar` y `/api/consumos/pendientes`), no sobre datos de impresoras crudos.
 
 | Método | Ruta | Descripción |
 |--------|------|-------------|
@@ -232,41 +266,39 @@ El flujo normal es: **preview → revisar → ejecutar**.
 ```json
 {
   "periodo": "2025-05",
-  "impresoras": [
-    {
-      "serial_number": "ABC123",
-      "empresa_nombre": "Empresa S.L.",
-      "modelo": "Kyocera TASKalfa 2553ci",
-      "bn_total": 125430,
-      "color1_total": 8200,
-      "color2_total": 0,
-      "color3_total": 0,
-      "fecha_lectura": "22/05/2025-23:59:00",
-      "fecha_lectura_anterior": "22/04/2025-23:59:00"
-    }
-  ]
+  "consumo_ids": [12, 13, 14]
 }
 ```
+`consumo_ids` es opcional en `preview` (si se omite, se calcula sobre todos los consumos pendientes
+del periodo); en `ejecutar` es obligatorio y no puede ir vacío.
 
-> Los datos de contadores provienen del CSV de Kyofleet, parseado en el frontend y enviado como JSON.
-
-**Respuesta preview:**
+**Respuesta (preview y ejecutar):**
 ```json
 {
   "periodo": "2025-05",
+  "modo": "preview",
   "resumen": {
     "total_impresoras": 1,
-    "facturadas": 1,
-    "omitidas": 0,
-    "importe_total": 87.50
+    "estados_impresoras": { "facturable": 1 },
+    "empresas_con_factura": 1,
+    "empresas_no_en_dolibarr": 0,
+    "facturas_creadas": 0,
+    "facturas_error_envio": 0,
+    "importe_total_estimado": 87.50,
+    "importe_sin_empresa": 0
   },
-  "detalle": [...]
+  "facturas_por_empresa": [...],
+  "impresoras_excluidas": [...]
 }
 ```
+`ejecutar` añade además `excel: { nombre, url }` con la URL (`/exports/<archivo>`) del reporte
+Excel de cierre generado automáticamente para todo el periodo.
 
 ---
 
 ### Dolibarr `/api/dolibarr`
+
+Requiere rol `admin`.
 
 | Método | Ruta | Descripción |
 |--------|------|-------------|
@@ -302,20 +334,27 @@ El flujo normal es: **preview → revisar → ejecutar**.
 ## Estructura del proyecto
 
 ```
+shared-auth/
+└── verifyPortalToken.js     # Verificación del JWT RS256 del portal Nethive (SSO)
+templates/                   # Plantillas .docx para generación de contratos
 src/
 ├── config/
 │   └── database.js          # Pool de conexiones MySQL
 ├── controllers/             # Lógica de cada recurso
 ├── middleware/
-│   ├── auth.middleware.js   # API key (solo producción)
+│   ├── auth.middleware.js   # JWT local + SSO portal + x-api-key legacy
 │   ├── error.middleware.js  # Manejo centralizado de errores
 │   ├── rateLimit.middleware.js
 │   └── validation.middleware.js  # Validaciones express-validator
 ├── models/                  # Queries SQL
 ├── routes/                  # Definición de rutas
+├── scripts/                 # Scripts puntuales: creación de usuarios, migraciones de datos, diagnóstico
 ├── services/
-│   ├── dolibarr.service.js  # Integración con Dolibarr REST API
-│   └── facturacion.service.js  # Motor de facturación
+│   ├── dolibarr.service.js       # Integración con Dolibarr REST API
+│   ├── facturacion.service.js    # Motor de facturación
+│   ├── importacion.service.js    # Importación de CSV Kyofleet → registros/consumos
+│   ├── documentoContrato.service.js  # Generación de contratos .docx desde plantilla
+│   └── reporteExcel.service.js   # Reporte Excel de cierre de facturación
 └── server.js
 ```
 
