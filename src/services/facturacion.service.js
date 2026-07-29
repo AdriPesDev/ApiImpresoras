@@ -1,6 +1,10 @@
 // El motor de cálculo por impresora vive ahora en un módulo puro y compartido
 // (lo reutiliza también la importación de CSV para poblar consumos_mensuales).
-const { procesarImpresora, nombreMes, timestampMesSiguiente } = require('./motorFacturacion');
+const {
+  procesarImpresora,
+  nombreMes,
+  timestampMesSiguiente,
+} = require("./motorFacturacion");
 
 class FacturacionService {
   constructor(pool, dolibarrService) {
@@ -66,7 +70,7 @@ class FacturacionService {
 
   async _getImpresoraId(serial) {
     const [rows] = await this.pool.query(
-      'SELECT id FROM impresoras WHERE serial_number = ?',
+      "SELECT id FROM impresoras WHERE serial_number = ?",
       [serial],
     );
     return rows[0]?.id || null;
@@ -80,9 +84,15 @@ class FacturacionService {
   async _procesarImpresora(fila, periodo) {
     const serial = fila.serial_number;
     const preciosImpresora = await this._getPreciosImpresora(serial);
-    const ultimaLectura    = await this._getUltimaLectura(serial);
-    const contratoLineas   = await this._getContratoLineas(serial);
-    return procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, contratoLineas });
+    const ultimaLectura = await this._getUltimaLectura(serial);
+    const contratoLineas = await this._getContratoLineas(serial);
+    return procesarImpresora({
+      fila,
+      periodo,
+      preciosImpresora,
+      ultimaLectura,
+      contratoLineas,
+    });
   }
 
   // Resuelve el tercero (socid) de una empresa para emitir en Dolibarr.
@@ -91,13 +101,31 @@ class FacturacionService {
   // cae a la búsqueda por nombre en Dolibarr.
   async _resolverTercero(empresaNombre) {
     const [rows] = await this.pool.query(
-      'SELECT dolibarr_id, nombre_oficial FROM empresas WHERE nombre_oficial = ? LIMIT 1',
+      "SELECT dolibarr_id, nombre_oficial FROM empresas WHERE nombre_oficial = ? LIMIT 1",
       [empresaNombre],
     );
+    let base;
     if (rows.length && Number(rows[0].dolibarr_id) > 0) {
-      return { id: Number(rows[0].dolibarr_id), nom: rows[0].nombre_oficial, _source: 'empresas' };
+      base = {
+        id: Number(rows[0].dolibarr_id),
+        nom: rows[0].nombre_oficial,
+        _source: "empresas",
+      };
+    } else {
+      base = await this.dolibarr.buscarTercero(empresaNombre);
     }
-    return this.dolibarr.buscarTercero(empresaNombre);
+    if (!base) return null;
+
+    // Condiciones/forma de pago: no vienen por la vía 'empresas' (solo id+nombre)
+    // ni de forma fiable por búsqueda. GET directo para heredar lo del cliente.
+    if (base.cond_reglement_id == null || base.mode_reglement_id == null) {
+      const full = await this.dolibarr.obtenerTerceroPorId(base.id);
+      if (full) {
+        base.cond_reglement_id = full.cond_reglement_id;
+        base.mode_reglement_id = full.mode_reglement_id;
+      }
+    }
+    return base;
   }
 
   // ── Group by company and build invoice payloads ──
@@ -105,7 +133,7 @@ class FacturacionService {
   async _agruparYConstruir(resultados, periodo) {
     const grupos = new Map();
     for (const r of resultados) {
-      if (r.estado === 'facturable') {
+      if (r.estado === "facturable") {
         if (!grupos.has(r.empresa)) grupos.set(r.empresa, []);
         grupos.get(r.empresa).push(r);
       }
@@ -113,14 +141,23 @@ class FacturacionService {
 
     const facturas = [];
     const empresasNoEncontradas = [];
+    // Fecha de emisión = día en que se genera la factura (no el periodo).
+    const ahora = new Date();
+    const fechaEmision = Math.floor(
+      new Date(
+        ahora.getFullYear(),
+        ahora.getMonth(),
+        ahora.getDate(),
+      ).getTime() / 1000,
+    );
 
     for (const [empresaNombre, impresoras] of grupos) {
       const tercero = await this._resolverTercero(empresaNombre);
       if (!tercero) {
         empresasNoEncontradas.push(empresaNombre);
         for (const imp of impresoras) {
-          imp.estado = 'sin_empresa_dolibarr';
-          imp.detalle.msg = 'no encontrada en Dolibarr.';
+          imp.estado = "sin_empresa_dolibarr";
+          imp.detalle.msg = "no encontrada en Dolibarr.";
         }
         continue;
       }
@@ -132,14 +169,15 @@ class FacturacionService {
         (sum, i) => sum + (i.detalle.importe_total || 0),
         0,
       );
-
+      const condId = Number(tercero.cond_reglement_id) || 0;
+      const modeId = Number(tercero.mode_reglement_id) || 0;
       const payload = {
         socid: parseInt(tercero.id, 10),
         type: 0,
-        date: timestampMesSiguiente(periodo),
+        date: fechaEmision,
         note_public: `Facturacion automatica - ${nombreMes(periodo)} - ${empresaNombre}`,
-        cond_reglement_id: tercero.cond_reglement_id || '',
-        mode_reglement_id: tercero.mode_reglement_id || '',
+        ...(condId > 0 ? { cond_reglement_id: condId } : {}),
+        ...(modeId > 0 ? { mode_reglement_id: modeId } : {}),
         lines: todasLineas.map((l) => ({
           desc: l.desc,
           qty: l.qty,
@@ -151,17 +189,17 @@ class FacturacionService {
       };
 
       facturas.push({
-        empresa_csv:         empresaNombre,
-        empresa_dolibarr:    tercero.nom,
-        socid:               parseInt(tercero.id, 10),
+        empresa_csv: empresaNombre,
+        empresa_dolibarr: tercero.nom,
+        socid: parseInt(tercero.id, 10),
         periodo,
-        num_impresoras:      impresoras.length,
-        seriales:            impresoras.map((i) => i.serial_number),
-        num_lineas:          todasLineas.length,
-        importe_total:       Math.round(importeTotal * 100) / 100,
-        estado:              'pendiente',
+        num_impresoras: impresoras.length,
+        seriales: impresoras.map((i) => i.serial_number),
+        num_lineas: todasLineas.length,
+        importe_total: Math.round(importeTotal * 100) / 100,
+        estado: "pendiente",
         id_factura_dolibarr: null,
-        dolibarr_payload:    payload,
+        dolibarr_payload: payload,
         impresoras,
       });
     }
@@ -178,9 +216,11 @@ class FacturacionService {
 
   async _cargarConsumos(periodo, consumoIds) {
     if (!Array.isArray(consumoIds) || !consumoIds.length) return [];
-    const ids = consumoIds.map((n) => Number.parseInt(n, 10)).filter(Number.isFinite);
+    const ids = consumoIds
+      .map((n) => Number.parseInt(n, 10))
+      .filter(Number.isFinite);
     if (!ids.length) return [];
-    const placeholders = ids.map(() => '?').join(',');
+    const placeholders = ids.map(() => "?").join(",");
     const [rows] = await this.pool.query(
       `SELECT cm.id, cm.impresora_id, cm.periodo,
               cm.copias_bn_mes, cm.copias_color1_mes, cm.copias_color2_mes, cm.copias_color3_mes,
@@ -199,7 +239,12 @@ class FacturacionService {
   // consumo, usando la última lectura del periodo como "actual" y la última
   // anterior al día 1 como "apertura".
   async _resultadosParaConsumo(consumo, periodo) {
-    const { impresora_id, serial_number: serial, modelo, empresa_nombre: empresaNombre } = consumo;
+    const {
+      impresora_id,
+      serial_number: serial,
+      modelo,
+      empresa_nombre: empresaNombre,
+    } = consumo;
 
     const [curRows] = await this.pool.query(
       `SELECT copias_bn_total, copias_color_total, copias_color1_total,
@@ -215,7 +260,7 @@ class FacturacionService {
     const fila = {
       serial_number: serial,
       modelo,
-      empresa_nombre: empresaNombre || '',
+      empresa_nombre: empresaNombre || "",
       bn_total: cur.copias_bn_total,
       color_total: cur.copias_color_total || 0,
       color1_total: cur.copias_color1_total,
@@ -227,7 +272,7 @@ class FacturacionService {
     };
 
     const preciosImpresora = await this._getPreciosImpresora(serial);
-    const contratoLineas   = await this._getContratoLineas(serial);
+    const contratoLineas = await this._getContratoLineas(serial);
     const [prevRows] = await this.pool.query(
       `SELECT copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total,
               fecha_lectura, contador_negativo
@@ -255,9 +300,17 @@ class FacturacionService {
       previa = intraRows[0] || null;
     }
 
-    const resultadosMotor = procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura: previa, contratoLineas });
+    const resultadosMotor = procesarImpresora({
+      fila,
+      periodo,
+      preciosImpresora,
+      ultimaLectura: previa,
+      contratoLineas,
+    });
     const fechaAnterior = previa?.fecha_lectura || null;
-    resultadosMotor.forEach((r) => { r.fecha_anterior = fechaAnterior; });
+    resultadosMotor.forEach((r) => {
+      r.fecha_anterior = fechaAnterior;
+    });
     return resultadosMotor;
   }
 
@@ -267,16 +320,21 @@ class FacturacionService {
   async preview(periodo, consumoIds) {
     this.dolibarr.clearCache();
     const consumos = await this._cargarConsumos(periodo, consumoIds);
-    const resultados = (await Promise.all(
-      consumos.map((c) => this._resultadosParaConsumo(c, periodo)),
-    )).flat();
+    const resultados = (
+      await Promise.all(
+        consumos.map((c) => this._resultadosParaConsumo(c, periodo)),
+      )
+    ).flat();
 
-    const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(resultados, periodo);
-    const excluidas = resultados.filter((r) => r.estado !== 'facturable');
+    const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(
+      resultados,
+      periodo,
+    );
+    const excluidas = resultados.filter((r) => r.estado !== "facturable");
 
     return {
       periodo,
-      modo: 'preview',
+      modo: "preview",
       resumen: this._resumen(resultados, facturas, empresasNoEncontradas),
       facturas_por_empresa: facturas,
       impresoras_excluidas: excluidas,
@@ -291,11 +349,16 @@ class FacturacionService {
     const serialToConsumo = new Map();
     for (const c of consumos) serialToConsumo.set(c.serial_number, c);
 
-    const resultados = (await Promise.all(
-      consumos.map((c) => this._resultadosParaConsumo(c, periodo)),
-    )).flat();
+    const resultados = (
+      await Promise.all(
+        consumos.map((c) => this._resultadosParaConsumo(c, periodo)),
+      )
+    ).flat();
 
-    const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(resultados, periodo);
+    const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(
+      resultados,
+      periodo,
+    );
 
     const consumosPersistidos = new Set();
     for (const factura of facturas) {
@@ -303,13 +366,16 @@ class FacturacionService {
       // 1) Crear la factura en Dolibarr
       try {
         const resp = await this.dolibarr.crearFactura(factura.dolibarr_payload);
-        idFactura = typeof resp === 'number' ? resp : resp?.id;
-        factura.estado              = 'creada';
+        idFactura = typeof resp === "number" ? resp : resp?.id;
+        factura.estado = "creada";
         factura.id_factura_dolibarr = idFactura;
       } catch (err) {
-        factura.estado       = 'error_envio';
+        factura.estado = "error_envio";
         factura.error_detalle = err.message;
-        console.error(`[Dolibarr] Error creando factura para ${factura.empresa_csv} (socid ${factura.socid}):`, err.message);
+        console.error(
+          `[Dolibarr] Error creando factura para ${factura.empresa_csv} (socid ${factura.socid}):`,
+          err.message,
+        );
         continue; // No se creó en Dolibarr → no hay nada que persistir.
       }
 
@@ -325,15 +391,15 @@ class FacturacionService {
           }
         }
       } catch (err) {
-        factura.estado        = 'creada_sin_persistir';
+        factura.estado = "creada_sin_persistir";
         factura.error_detalle = `Factura creada en Dolibarr (id ${idFactura}) pero falló la persistencia local: ${err.message}`;
       }
     }
 
-    const excluidas = resultados.filter((r) => r.estado !== 'facturable');
+    const excluidas = resultados.filter((r) => r.estado !== "facturable");
     return {
       periodo,
-      modo: 'produccion',
+      modo: "produccion",
       resumen: this._resumen(resultados, facturas, empresasNoEncontradas),
       facturas_por_empresa: facturas,
       impresoras_excluidas: excluidas,
@@ -411,29 +477,30 @@ class FacturacionService {
 
     const impresorasInactivas = inactivasRows.map((r) => {
       const bnAnterior = r.bn_anterior != null ? Number(r.bn_anterior) : null;
-      const bnActual   = r.bn_actual   != null ? Number(r.bn_actual)   : 0;
+      const bnActual = r.bn_actual != null ? Number(r.bn_actual) : 0;
       const c1Anterior = r.c1_anterior != null ? Number(r.c1_anterior) : null;
-      const c1Actual   = r.c1_actual   != null ? Number(r.c1_actual)   : 0;
-      const deltaBn    = bnAnterior !== null ? bnActual - bnAnterior : null;
-      const deltaC1    = c1Anterior !== null ? c1Actual - c1Anterior : null;
-      const avisobn    = (deltaBn !== null && deltaBn < 0)  ? deltaBn  : null;
-      const avisoc1    = (deltaC1 !== null && deltaC1 < 0) ? deltaC1 : null;
-      const detalle    = {
+      const c1Actual = r.c1_actual != null ? Number(r.c1_actual) : 0;
+      const deltaBn = bnAnterior !== null ? bnActual - bnAnterior : null;
+      const deltaC1 = c1Anterior !== null ? c1Actual - c1Anterior : null;
+      const avisobn = deltaBn !== null && deltaBn < 0 ? deltaBn : null;
+      const avisoc1 = deltaC1 !== null && deltaC1 < 0 ? deltaC1 : null;
+      const detalle = {
         bn_anterior: bnAnterior ?? 0,
-        bn_actual:   bnActual,
-        msg: (avisobn !== null || avisoc1 !== null)
-          ? 'Inactiva con contador negativo detectado.'
-          : 'Impresora marcada como inactiva en BD.',
+        bn_actual: bnActual,
+        msg:
+          avisobn !== null || avisoc1 !== null
+            ? "Inactiva con contador negativo detectado."
+            : "Impresora marcada como inactiva en BD.",
       };
-      if (avisobn !== null) detalle.aviso_bn_negativo    = avisobn;
+      if (avisobn !== null) detalle.aviso_bn_negativo = avisobn;
       if (avisoc1 !== null) detalle.aviso_color_negativo = avisoc1;
       return {
-        empresa:        r.empresa_nombre || '',
-        serial_number:  r.serial_number,
-        modelo:         r.modelo,
-        estado:         'inactiva',
+        empresa: r.empresa_nombre || "",
+        serial_number: r.serial_number,
+        modelo: r.modelo,
+        estado: "inactiva",
         fecha_anterior: null,
-        fecha_lectura:  r.fecha_lectura || null,
+        fecha_lectura: r.fecha_lectura || null,
         detalle,
       };
     });
@@ -487,29 +554,70 @@ class FacturacionService {
       const impC1 = Number(r.importe_color1) || 0;
       const total = Number(r.total_facturar) || 0;
       const lineas = [];
-      if (copBN > 0) lineas.push({ desc: `Copias BN — ${r.modelo} (SN: ${r.serial_number})`, qty: copBN, subprice: Math.round(impBN / copBN * 1e6) / 1e6, product_type: 1, tva_tx: 21.0, remise_percent: 0 });
-      if (copC1 > 0) lineas.push({ desc: `Copias COLOR — ${r.modelo} (SN: ${r.serial_number})`, qty: copC1, subprice: Math.round(impC1 / copC1 * 1e6) / 1e6, product_type: 1, tva_tx: 21.0, remise_percent: 0 });
-      if (!lineas.length) lineas.push({ desc: `Mínimo mensual — ${r.modelo} (SN: ${r.serial_number})`, qty: 1, subprice: total, product_type: 1, tva_tx: 21.0, remise_percent: 0 });
+      if (copBN > 0)
+        lineas.push({
+          desc: `Copias BN — ${r.modelo} (SN: ${r.serial_number})`,
+          qty: copBN,
+          subprice: Math.round((impBN / copBN) * 1e6) / 1e6,
+          product_type: 1,
+          tva_tx: 21.0,
+          remise_percent: 0,
+        });
+      if (copC1 > 0)
+        lineas.push({
+          desc: `Copias COLOR — ${r.modelo} (SN: ${r.serial_number})`,
+          qty: copC1,
+          subprice: Math.round((impC1 / copC1) * 1e6) / 1e6,
+          product_type: 1,
+          tva_tx: 21.0,
+          remise_percent: 0,
+        });
+      if (!lineas.length)
+        lineas.push({
+          desc: `Mínimo mensual — ${r.modelo} (SN: ${r.serial_number})`,
+          qty: 1,
+          subprice: total,
+          product_type: 1,
+          tva_tx: 21.0,
+          remise_percent: 0,
+        });
       return {
-        serial_number: r.serial_number, modelo: r.modelo, empresa: r.empresa_nombre || '',
-        periodo, fecha_lectura: r.fecha_actual || null, fecha_anterior: r.fecha_anterior || null,
-        estado: 'facturable',
+        serial_number: r.serial_number,
+        modelo: r.modelo,
+        empresa: r.empresa_nombre || "",
+        periodo,
+        fecha_lectura: r.fecha_actual || null,
+        fecha_anterior: r.fecha_anterior || null,
+        estado: "facturable",
         detalle: {
-          bn_anterior: Number(r.bn_anterior) || 0, bn_actual: Number(r.bn_actual) || 0, copias_bn: copBN,
-          c1_anterior: Number(r.c1_anterior) || 0, c1_actual: Number(r.c1_actual) || 0, copias_c1: copC1,
-          importe_bn: impBN, importe_c1: impC1, importe_total: total,
+          bn_anterior: Number(r.bn_anterior) || 0,
+          bn_actual: Number(r.bn_actual) || 0,
+          copias_bn: copBN,
+          c1_anterior: Number(r.c1_anterior) || 0,
+          c1_actual: Number(r.c1_actual) || 0,
+          copias_c1: copC1,
+          importe_bn: impBN,
+          importe_c1: impC1,
+          importe_total: total,
         },
         lineas_factura: lineas,
       };
     });
 
     const resultados = [
-      ...(await Promise.all(printers.map((p) => this._resultadosParaConsumo(p, periodo)))).flat(),
+      ...(
+        await Promise.all(
+          printers.map((p) => this._resultadosParaConsumo(p, periodo)),
+        )
+      ).flat(),
       ...facturablesOld,
     ];
 
-    const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(resultados, periodo);
-    const excluidas = resultados.filter((r) => r.estado !== 'facturable');
+    const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(
+      resultados,
+      periodo,
+    );
+    const excluidas = resultados.filter((r) => r.estado !== "facturable");
 
     // Impresoras con 0 copias en este periodo que SÍ estuvieron en el CSV del
     // lote pero cuya fecha_lectura es histórica (timestamp antiguo → no aparecen
@@ -551,17 +659,17 @@ class FacturacionService {
     );
 
     const excluidasSinPeriodo = sinLecturaPeriodoRows.map((r) => ({
-      serial_number:  r.serial_number,
-      modelo:         r.modelo,
-      empresa:        r.empresa_nombre || '',
+      serial_number: r.serial_number,
+      modelo: r.modelo,
+      empresa: r.empresa_nombre || "",
       periodo,
-      fecha_lectura:  r.fecha_actual   || null,
+      fecha_lectura: r.fecha_actual || null,
       fecha_anterior: r.fecha_anterior || null,
-      estado: 'sin_consumo',
+      estado: "sin_consumo",
       detalle: {
         bn_anterior: r.bn_anterior ?? 0,
-        bn_actual:   r.bn_actual   ?? 0,
-        msg: 'Sin lectura en el periodo. Última lectura de un periodo anterior.',
+        bn_actual: r.bn_actual ?? 0,
+        msg: "Sin lectura en el periodo. Última lectura de un periodo anterior.",
       },
       lineas_factura: [],
     }));
@@ -605,20 +713,21 @@ class FacturacionService {
     );
 
     const excluidasContNegOld = contNegOldRows.map((r) => ({
-      serial_number:  r.serial_number,
-      modelo:         r.modelo,
-      empresa:        r.empresa_nombre || '',
+      serial_number: r.serial_number,
+      modelo: r.modelo,
+      empresa: r.empresa_nombre || "",
       periodo,
-      fecha_lectura:  r.fecha_actual   || null,
+      fecha_lectura: r.fecha_actual || null,
       fecha_anterior: r.fecha_anterior || null,
-      estado: 'contador_negativo',
+      estado: "contador_negativo",
       detalle: {
-        bn_anterior:     Number(r.bn_anterior) || 0,
-        bn_actual:       Number(r.bn_actual)   || 0,
-        copias_bn_bruto: (Number(r.bn_actual) || 0) - (Number(r.bn_anterior) || 0),
-        c1_anterior:     Number(r.c1_anterior) || 0,
-        c1_actual:       Number(r.c1_actual)   || 0,
-        msg: 'Reset total de contadores. 0 copias este mes.',
+        bn_anterior: Number(r.bn_anterior) || 0,
+        bn_actual: Number(r.bn_actual) || 0,
+        copias_bn_bruto:
+          (Number(r.bn_actual) || 0) - (Number(r.bn_anterior) || 0),
+        c1_anterior: Number(r.c1_anterior) || 0,
+        c1_actual: Number(r.c1_actual) || 0,
+        msg: "Reset total de contadores. 0 copias este mes.",
       },
       lineas_factura: [],
     }));
@@ -651,16 +760,16 @@ class FacturacionService {
     );
 
     const inactivasOld = inactivasOldRows.map((r) => ({
-      empresa:        r.empresa_nombre || '',
-      serial_number:  r.serial_number,
-      modelo:         r.modelo,
-      estado:         'inactiva',
+      empresa: r.empresa_nombre || "",
+      serial_number: r.serial_number,
+      modelo: r.modelo,
+      estado: "inactiva",
       fecha_anterior: null,
-      fecha_lectura:  r.fecha_actual || null,
+      fecha_lectura: r.fecha_actual || null,
       detalle: {
         bn_anterior: 0,
-        bn_actual:   Number(r.bn_actual) || 0,
-        msg: 'Impresora marcada como inactiva en BD. Sin lectura en el periodo.',
+        bn_actual: Number(r.bn_actual) || 0,
+        msg: "Impresora marcada como inactiva en BD. Sin lectura en el periodo.",
       },
     }));
 
@@ -692,33 +801,40 @@ class FacturacionService {
     );
 
     const sinDatosPeriodo = sinDatosRows.map((r) => ({
-      serial_number:  r.serial_number,
-      modelo:         r.modelo,
-      empresa:        r.empresa_nombre || '',
+      serial_number: r.serial_number,
+      modelo: r.modelo,
+      empresa: r.empresa_nombre || "",
       periodo,
-      fecha_lectura:  null,
+      fecha_lectura: null,
       fecha_anterior: r.ultima_lectura || null,
-      estado: 'sin_consumo',
+      estado: "sin_consumo",
       detalle: {
         bn_anterior: r.ultimo_bn != null ? Number(r.ultimo_bn) : 0,
-        bn_actual:   r.ultimo_bn != null ? Number(r.ultimo_bn) : 0,
-        msg: 'No se importó ningún contador este periodo.',
+        bn_actual: r.ultimo_bn != null ? Number(r.ultimo_bn) : 0,
+        msg: "No se importó ningún contador este periodo.",
       },
       lineas_factura: [],
     }));
 
-    const [[{ total_flota }]] = await this.pool.query('SELECT COUNT(*) AS total_flota FROM impresoras');
+    const [[{ total_flota }]] = await this.pool.query(
+      "SELECT COUNT(*) AS total_flota FROM impresoras",
+    );
 
     const resumen = this._resumen(resultados, facturas, empresasNoEncontradas);
     resumen.total_inactivas = impresorasInactivas.length + inactivasOld.length;
-    resumen.total_flota     = Number(total_flota);
+    resumen.total_flota = Number(total_flota);
 
     return {
       periodo,
-      modo: 'produccion',
+      modo: "produccion",
       resumen,
       facturas_por_empresa: facturas,
-      impresoras_excluidas: [...excluidas, ...excluidasSinPeriodo, ...excluidasContNegOld, ...sinDatosPeriodo],
+      impresoras_excluidas: [
+        ...excluidas,
+        ...excluidasSinPeriodo,
+        ...excluidasContNegOld,
+        ...sinDatosPeriodo,
+      ],
       impresoras_inactivas: [...impresorasInactivas, ...inactivasOld],
     };
   }
@@ -734,7 +850,7 @@ class FacturacionService {
       await conn.beginTransaction();
 
       await conn.query(
-        'UPDATE consumos_mensuales SET facturado = 1 WHERE id = ?',
+        "UPDATE consumos_mensuales SET facturado = 1 WHERE id = ?",
         [consumo.id],
       );
 
@@ -746,11 +862,17 @@ class FacturacionService {
             total, fecha_factura, usuario)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'api')`,
         [
-          consumo.id, consumo.impresora_id, consumo.periodo,
-          consumo.copias_bn_mes ?? 0, consumo.copias_color1_mes ?? 0,
-          consumo.copias_color2_mes ?? 0, consumo.copias_color3_mes ?? 0,
-          consumo.importe_bn ?? 0, consumo.importe_color1 ?? 0,
-          consumo.importe_color2 ?? 0, consumo.importe_color3 ?? 0,
+          consumo.id,
+          consumo.impresora_id,
+          consumo.periodo,
+          consumo.copias_bn_mes ?? 0,
+          consumo.copias_color1_mes ?? 0,
+          consumo.copias_color2_mes ?? 0,
+          consumo.copias_color3_mes ?? 0,
+          consumo.importe_bn ?? 0,
+          consumo.importe_color1 ?? 0,
+          consumo.importe_color2 ?? 0,
+          consumo.importe_color3 ?? 0,
           consumo.total_facturar ?? 0,
         ],
       );
@@ -771,28 +893,31 @@ class FacturacionService {
     for (const r of resultados) {
       estados[r.estado] = (estados[r.estado] || 0) + 1;
     }
-    const creadas = facturas.filter((f) => f.estado === 'creada').length;
-    const errores = facturas.filter((f) => f.estado === 'error_envio').length;
-    const creadasSinPersistir = facturas.filter((f) => f.estado === 'creada_sin_persistir').length;
+    const creadas = facturas.filter((f) => f.estado === "creada").length;
+    const errores = facturas.filter((f) => f.estado === "error_envio").length;
+    const creadasSinPersistir = facturas.filter(
+      (f) => f.estado === "creada_sin_persistir",
+    ).length;
     return {
-      total_impresoras:         resultados.length,
-      estados_impresoras:       estados,
-      empresas_con_factura:     facturas.length,
-      empresas_no_en_dolibarr:  noEncontradas.length,
-      nombres_no_en_dolibarr:   noEncontradas,
-      facturas_creadas:         creadas,
-      facturas_error_envio:     errores,
+      total_impresoras: resultados.length,
+      estados_impresoras: estados,
+      empresas_con_factura: facturas.length,
+      empresas_no_en_dolibarr: noEncontradas.length,
+      nombres_no_en_dolibarr: noEncontradas,
+      facturas_creadas: creadas,
+      facturas_error_envio: errores,
       facturas_creadas_sin_persistir: creadasSinPersistir,
-      importe_total_estimado:   Math.round(
-        facturas.reduce((s, f) => s + f.importe_total, 0) * 100,
-      ) / 100,
+      importe_total_estimado:
+        Math.round(facturas.reduce((s, f) => s + f.importe_total, 0) * 100) /
+        100,
       // Importe de printers sin empresa Dolibarr: no entra en facturas pero sí
       // en consumos_mensuales → explica por qué la página muestra un total mayor.
-      importe_sin_empresa: Math.round(
-        resultados
-          .filter((r) => r.estado === 'sin_empresa_dolibarr')
-          .reduce((s, r) => s + (r.detalle?.importe_total || 0), 0) * 100,
-      ) / 100,
+      importe_sin_empresa:
+        Math.round(
+          resultados
+            .filter((r) => r.estado === "sin_empresa_dolibarr")
+            .reduce((s, r) => s + (r.detalle?.importe_total || 0), 0) * 100,
+        ) / 100,
     };
   }
 

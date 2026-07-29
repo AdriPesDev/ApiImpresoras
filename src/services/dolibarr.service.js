@@ -4,14 +4,14 @@ class DolibarrService {
   }
 
   _baseUrl() {
-    return process.env.DOLIBARR_URL?.replace(/\/$/, '');
+    return process.env.DOLIBARR_URL?.replace(/\/$/, "");
   }
 
   _headers() {
     return {
       DOLAPIKEY: process.env.DOLIBARR_API_KEY,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
+      "Content-Type": "application/json",
+      Accept: "application/json",
     };
   }
 
@@ -29,13 +29,13 @@ class DolibarrService {
 
   async post(endpoint, payload) {
     const res = await fetch(`${this._baseUrl()}/api/index.php/${endpoint}`, {
-      method: 'POST',
+      method: "POST",
       headers: this._headers(),
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
+      const text = await res.text().catch(() => "");
       throw new Error(`Dolibarr POST /${endpoint} → ${res.status} ${text}`);
     }
     return res.json();
@@ -48,8 +48,8 @@ class DolibarrService {
   }
 
   async buscarTercero(nombre) {
-    if (process.env.DOLIBARR_MOCK === 'true') {
-      const fake = { id: 99999, nom: nombre, _source: 'mock' };
+    if (process.env.DOLIBARR_MOCK === "true") {
+      const fake = { id: 99999, nom: nombre, _source: "mock" };
       this._cache.set(nombre, fake);
       return fake;
     }
@@ -57,7 +57,9 @@ class DolibarrService {
 
     try {
       // Level 1: exact match
-      let res = await this._get('thirdparties', { sqlfilters: `(t.nom:=:'${nombre}')` });
+      let res = await this._get("thirdparties", {
+        sqlfilters: `(t.nom:=:'${nombre}')`,
+      });
       if (Array.isArray(res) && res.length) {
         const t = this._normalizar(res[0]);
         this._cache.set(nombre, t);
@@ -65,7 +67,9 @@ class DolibarrService {
       }
 
       // Level 2: prefix LIKE
-      res = await this._get('thirdparties', { sqlfilters: `(t.nom:like:'${nombre}%')` });
+      res = await this._get("thirdparties", {
+        sqlfilters: `(t.nom:like:'${nombre}%')`,
+      });
       if (Array.isArray(res) && res.length) {
         const t = this._normalizar(res[0]);
         this._cache.set(nombre, t);
@@ -75,13 +79,13 @@ class DolibarrService {
       // Level 3: keyword search — all significant words (≥3 chars) must appear in the Dolibarr name
       const palabras = nombre.split(/\s+/).filter((p) => p.length >= 3);
       if (palabras.length) {
-        res = await this._get('thirdparties', {
+        res = await this._get("thirdparties", {
           sqlfilters: `(t.nom:like:'%${palabras[0]}%')`,
         });
         if (Array.isArray(res) && res.length) {
           const palabrasLower = palabras.map((p) => p.toLowerCase());
           for (const tercero of res) {
-            const nomDoli = (tercero.nom || tercero.name || '').toLowerCase();
+            const nomDoli = (tercero.nom || tercero.name || "").toLowerCase();
             if (palabrasLower.every((p) => nomDoli.includes(p))) {
               const t = this._normalizar(tercero);
               this._cache.set(nombre, t);
@@ -99,17 +103,37 @@ class DolibarrService {
   }
 
   async listarTerceros(params = {}) {
-    const res = await this._get('thirdparties', params);
+    const res = await this._get("thirdparties", params);
     return Array.isArray(res) ? res.map((t) => this._normalizar(t)) : [];
   }
 
+  async obtenerTerceroPorId(id) {
+    if (process.env.DOLIBARR_MOCK === "true") {
+      return {
+        id,
+        nom: `mock-${id}`,
+        cond_reglement_id: 1,
+        mode_reglement_id: 3,
+        _source: "mock",
+      };
+    }
+    try {
+      const t = await this._get(`thirdparties/${id}`);
+      return t ? this._normalizar(t) : null;
+    } catch (err) {
+      return null; // el llamante ya trata la ausencia de condiciones
+    }
+  }
+
   async crearFactura(payload) {
-    if (process.env.DOLIBARR_MOCK === 'true') {
+    if (process.env.DOLIBARR_MOCK === "true") {
       const fakeId = Math.floor(Math.random() * 90000) + 10000;
-      console.log(`[DOLIBARR_MOCK] crearFactura simulada → id ${fakeId} socid=${payload.socid}`);
+      console.log(
+        `[DOLIBARR_MOCK] crearFactura simulada → id ${fakeId} socid=${payload.socid}`,
+      );
       return fakeId;
     }
-    return this.post('invoices', payload);
+    return this.post("invoices", payload);
   }
 
   clearCache() {
