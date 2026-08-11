@@ -19,6 +19,11 @@ const MESES = [
   'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
 ];
 
+// Umbral de copias para considerar un delta (o una primera lectura) como
+// anómalo — único origen de verdad, reutilizado por importacion.service.js
+// para no duplicar el número y que ambos sitios se comporten igual.
+const ANOMALY_THRESHOLD = parseInt(process.env.ANOMALY_THRESHOLD, 10) || 10000;
+
 function nombreMes(periodo) {
   const [anio, mes] = periodo.split('-');
   return `${MESES[parseInt(mes, 10) - 1]} ${anio}`;
@@ -75,7 +80,11 @@ function parsearFecha(valor) {
 //   preciosImpresora fila de impresoras (precio_copia_bn, ...) o null
 //   ultimaLectura   última fila de registros_contadores o null (primera lectura)
 //   contratoLineas  array de líneas de contrato_impresoras (puede ser [])
-function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, contratoLineas }) {
+//   forzarPrimeraLectura  si true, factura la primera lectura aunque supere
+//                         el umbral de anomalía — confirmación manual de que
+//                         el total ya acumulado SÍ es consumo real a facturar
+//                         (ver consumos_mensuales.primera_lectura_confirmada).
+function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, contratoLineas, forzarPrimeraLectura }) {
   const serial  = fila.serial_number;
   const modelo  = fila.modelo || serial;
   const empresa = fila.empresa_nombre;
@@ -85,8 +94,14 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
   const c1Actual     = toInt(fila.color1_total);
   const c2Actual     = toInt(fila.color2_total);
   const c3Actual     = toInt(fila.color3_total);
-  const niv2Actual   = toInt(fila.color_niv2_total);
-  const niv3Actual   = toInt(fila.color_niv3_total);
+  // color_niv2_total/color_niv3_total es un alias que solo ponía
+  // facturacion.service.js; el resto del sistema (CSV, import, BD) usa
+  // color2_total/color3_total — leer solo el alias hacía que la IMPORTACIÓN
+  // nunca detectara impresoras multicolor (niv2Actual/niv3Actual siempre 0
+  // ahí), tratándolas como B/N+color simple con el agregado color_total en
+  // vez de desglosar por nivel.
+  const niv2Actual   = toInt(fila.color2_total ?? fila.color_niv2_total);
+  const niv3Actual   = toInt(fila.color3_total ?? fila.color_niv3_total);
   const fechaLecturaCSV = parsearFecha(fila.fecha_lectura);
 
   // Detect billing type from what's populated in the CSV
@@ -139,16 +154,59 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
   const avisos = {};
 
   if (esPrimeraLectura) {
+    // Primera lectura de la impresora: se factura como consumo del primer
+    // mes (equivale a partir de una lectura anterior = 0) SALVO que el total
+    // ya acumulado sea muy alto — señal de que la máquina traía historial
+    // sin facturar (alta tardía en el sistema, o venía de otra gestión) y
+    // facturarlo de golpe sería un error real (pasó: ~2.000€ de una sola vez).
+    // Por debajo del umbral (impresora recién instalada, consumo plausible
+    // de un mes) se factura sin más. Por encima, se deja fuera y se avisa
+    // para revisión manual — puede ser una impresora reasignada de empresa
+    // cuya última lectura conocida no tenemos, y eso no se puede adivinar.
+    const totalPrimeraLectura = bnActual + c1Eff + niv2Actual + niv3Actual;
+    if (totalPrimeraLectura > ANOMALY_THRESHOLD && !forzarPrimeraLectura) {
+      const r = baseResultado();
+      r.estado = 'primera_lectura_alta';
+      r.detalle = {
+        primera_lectura: true,
+        msg: `Primera lectura con ${totalPrimeraLectura.toLocaleString('es-ES')} copias ya acumuladas (umbral ${ANOMALY_THRESHOLD.toLocaleString('es-ES')}). `
+          + 'No se ha facturado automáticamente: revisar si es historial sin facturar o si hay que buscar su última lectura conocida (p.ej. venía de otra empresa) para facturar solo el delta real.',
+        tipo_facturacion_detectado: tipoDetectado,
+        bn_anterior: 0, bn_actual: bnActual,
+        c1_anterior: 0, c1_actual: c1Eff,
+        c2_anterior: 0, c2_actual: niv2Actual,
+        c3_anterior: 0, c3_actual: niv3Actual,
+      };
+      return [r];
+    }
     bnAnterior = 0; c1Anterior = 0; c2Anterior = 0; c3Anterior = 0;
     contadorNegativoAnterior = false;
     copiasBNBruto = bnActual;
     copiasC1Bruto = c1Eff;
     avisos.primera_lectura = true;
+    if (forzarPrimeraLectura) avisos.primera_lectura_forzada = true;
   } else {
     bnAnterior  = toInt(ultima.copias_bn_total);
-    c1Anterior  = toInt(ultima.copias_color1_total);
-    c2Anterior  = toInt(ultima.copias_color2_total);
-    c3Anterior  = toInt(ultima.copias_color3_total);
+    const c1AnteriorNivel = toInt(ultima.copias_color1_total);
+    const c2AnteriorNivel = toInt(ultima.copias_color2_total);
+    const c3AnteriorNivel = toInt(ultima.copias_color3_total);
+    // Kyofleet puede dejar de mandar el desglose por nivel en una lectura
+    // puntual (solo trae el agregado "color total") aunque el periodo
+    // anterior SÍ lo tuviera. Si ahora facturamos por agregado (no
+    // multicolor este periodo) pero el cierre anterior venía desglosado,
+    // hay que comparar contra la SUMA de los niveles anteriores — comparar
+    // el agregado actual contra solo el nivel 1 anterior vuelve a contar los
+    // niveles 2/3 ya facturados el periodo pasado (detectado 2026-08-11 con
+    // V7F7912000: Color salió 15.529 en vez de los ~5.391 reales).
+    if (!esMulticolor && (c2AnteriorNivel > 0 || c3AnteriorNivel > 0)) {
+      c1Anterior = c1AnteriorNivel + c2AnteriorNivel + c3AnteriorNivel;
+      c2Anterior = 0;
+      c3Anterior = 0;
+    } else {
+      c1Anterior = c1AnteriorNivel;
+      c2Anterior = c2AnteriorNivel;
+      c3Anterior = c3AnteriorNivel;
+    }
     contadorNegativoAnterior = Boolean(ultima.contador_negativo);
 
     // Skip out-of-order readings (CSV date older than last DB reading)
@@ -175,6 +233,8 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
       msg: 'Reset total de contadores. 0 copias este mes.',
       bn_anterior: bnAnterior, bn_actual: bnActual, copias_bn_bruto: copiasBNBruto,
       c1_anterior: c1Anterior, c1_actual: c1Eff,    copias_c1_bruto: copiasC1Bruto,
+      c2_anterior: c2Anterior, c2_actual: niv2Actual,
+      c3_anterior: c3Anterior, c3_actual: niv3Actual,
     };
     return [r];
   }
@@ -199,11 +259,46 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
   const pC3 = toFloat(preciosImpresora.precio_copia_color3) || pC1;
 
   let objetivos;
-  if (lineas.length > 0) {
+  if (lineas.length === 1) {
+    // Contrato individual (no compartido): se factura SIEMPRE al dueño real de
+    // la impresora (fila.empresa_nombre), no a la empresa que tenga apuntada
+    // el contrato — el contrato solo aporta precio/incluidas/mínimo. Si el
+    // contrato apunta a otra empresa (dato desactualizado o error de alta), se
+    // avisa mediante contrato_empresa_distinta pero NO se redirige la factura.
+    const l = lineas[0];
+    const empresaContrato = l.empresa_nombre || null;
+    objetivos = [{
+      empresa,
+      contrato: true,
+      numero_contrato: l.numero_contrato,
+      factura_separada: Boolean(l.factura_separada),
+      precioBN: toFloat(l.precio_bn) || pBN,
+      precioC1: toFloat(l.precio_color1) || pC1,
+      precioC2: toFloat(l.precio_color2) || pC2,
+      precioC3: toFloat(l.precio_color3) || pC3,
+      pct: toFloat(l.porcentaje_participacion, 100) / 100,
+      inclBN: toInt(l.copias_bn_incluidas),
+      inclC1: toInt(l.copias_c1_incluidas),
+      inclC2: toInt(l.copias_c2_incluidas),
+      inclC3: toInt(l.copias_c3_incluidas),
+      minimo: toFloat(l.precio_minimo_mensual),
+      avisoEmpresaDistinta:
+        empresaContrato && empresaContrato !== empresa ? empresaContrato : null,
+    }];
+  } else if (lineas.length > 1) {
+    // Contrato compartido: cada línea SÍ se factura a su propia empresa
+    // participante (reparto por porcentaje). Solo se avisa si el dueño de la
+    // impresora no está entre los participantes — puede ser correcto (p.ej.
+    // alquilada íntegramente a terceros) pero conviene revisarlo.
+    const duenoParticipa = lineas.some((l) => l.empresa_nombre === empresa);
     objetivos = lineas.map((l) => ({
       empresa: l.empresa_nombre || empresa,
       contrato: true,
       numero_contrato: l.numero_contrato,
+      // Si el contrato está marcado como factura_separada, sus líneas van en
+      // una factura propia (identificada por el nº de contrato) en vez de
+      // fundirse con la factura general de la empresa — ver _agruparYConstruir.
+      factura_separada: Boolean(l.factura_separada),
       // Precio de contrato si lo define; si es null/0, cae al precio de impresora.
       precioBN: toFloat(l.precio_bn) || pBN,
       precioC1: toFloat(l.precio_color1) || pC1,
@@ -215,6 +310,7 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
       inclC2: toInt(l.copias_c2_incluidas),
       inclC3: toInt(l.copias_c3_incluidas),
       minimo: toFloat(l.precio_minimo_mensual),
+      avisoDuenoNoParticipa: !duenoParticipa,
     }));
   } else {
     objetivos = [{
@@ -227,9 +323,14 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
 
   const compartido = objetivos.length > 1;
   const mesTxt = nombreMes(periodo);
-  const _linea = (tipo, ant, act, qty, precio, pct) => ({
+  // El nº de contrato va en la línea de Dolibarr (no solo en el detalle interno):
+  // es lo que permite a administración/cliente identificar bajo qué alquiler se
+  // factura cada máquina, sobre todo cuando una misma empresa tiene varias
+  // facturas separadas por contrato (ver _agruparYConstruir en facturacion.service).
+  const _linea = (tipo, ant, act, qty, precio, pct, numeroContrato) => ({
     tipo,
     desc: `Periodo: ${mesTxt}<br>\nCopias ${tipo} - ${modelo} (SN: ${serial})`
+        + (numeroContrato ? `<br>\nContrato: ${numeroContrato}` : '')
         + (pct < 1 ? `<br>\nParticipación: ${Math.round(pct * 100)}%` : '')
         + `<br>\nLectura anterior: ${ant.toLocaleString('es-ES')} ${tipo}`
         + `<br>\nLectura actual: ${act.toLocaleString('es-ES')} ${tipo}`,
@@ -248,14 +349,18 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
     const copC2    = Math.max(0, Math.round(copC2Bruto * o.pct) - o.inclC2);
     const copC3    = Math.max(0, Math.round(copC3Bruto * o.pct) - o.inclC3);
 
-    // Sin consumo para esta empresa (y no es primera lectura) → se excluye.
-    if (copiasBN === 0 && copiasC1 === 0 && copC2 === 0 && copC3 === 0 && !esPrimeraLectura) {
+    // Sin consumo para esta empresa → se excluye (la primera lectura ya
+    // retornó antes, así que aquí siempre hay lectura anterior real).
+    if (copiasBN === 0 && copiasC1 === 0 && copC2 === 0 && copC3 === 0) {
       const r = baseResultado();
       r.empresa = o.empresa;
       r.estado = 'sin_consumo';
       r.detalle = { ...avisos, msg: 'Diferencia 0 copias.', contrato: o.contrato,
         numero_contrato: o.numero_contrato, participacion: o.pct,
-        bn_anterior: bnAnterior, bn_actual: bnActual };
+        bn_anterior: bnAnterior, bn_actual: bnActual,
+        c1_anterior: c1Anterior, c1_actual: c1Eff,
+        c2_anterior: c2Anterior, c2_actual: c2Eff,
+        c3_anterior: c3Anterior, c3_actual: c3Eff };
       resultados.push(r);
       continue;
     }
@@ -276,6 +381,11 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
       ...avisos,
       contrato: o.contrato,
       numero_contrato: o.numero_contrato,
+      factura_separada: Boolean(o.factura_separada),
+      ...(o.avisoEmpresaDistinta
+        ? { contrato_empresa_distinta: o.avisoEmpresaDistinta }
+        : {}),
+      ...(o.avisoDuenoNoParticipa ? { contrato_dueno_no_participa: true } : {}),
       compartida: compartido,
       participacion: o.pct,
       precio_minimo: o.minimo,
@@ -284,18 +394,20 @@ function procesarImpresora({ fila, periodo, preciosImpresora, ultimaLectura, con
       tipo_facturacion_bd: o.tipo_facturacion_bd,
       bn_anterior: bnAnterior, bn_actual: bnActual, copias_bn: copiasBN, precio_bn: o.precioBN,
       c1_anterior: c1Anterior, c1_actual: c1Eff,    copias_c1: copiasC1, precio_c1: o.precioC1,
+      c2_anterior: c2Anterior, c2_actual: c2Eff,
+      c3_anterior: c3Anterior, c3_actual: c3Eff,
       copias_c2: copC2, copias_c3: copC3,
       importe_bn: importeBN, importe_c1: importeC1, importe_c2: importeC2, importe_c3: importeC3,
       importe_total: importeTotal,
     };
 
-    if (copiasBN > 0) r.lineas_factura.push(_linea('BN', bnAnterior, bnActual, copiasBN, o.precioBN, o.pct));
+    if (copiasBN > 0) r.lineas_factura.push(_linea('BN', bnAnterior, bnActual, copiasBN, o.precioBN, o.pct, o.numero_contrato));
     if (tipoDetectado === 'BN_MULTICOLOR') {
-      if (copiasC1 > 0) r.lineas_factura.push(_linea('COLOR1', c1Anterior, c1Eff, copiasC1, o.precioC1, o.pct));
-      if (copC2 > 0)    r.lineas_factura.push(_linea('COLOR2', c2Anterior, c2Eff, copC2, o.precioC2, o.pct));
-      if (copC3 > 0)    r.lineas_factura.push(_linea('COLOR3', c3Anterior, c3Eff, copC3, o.precioC3, o.pct));
+      if (copiasC1 > 0) r.lineas_factura.push(_linea('COLOR1', c1Anterior, c1Eff, copiasC1, o.precioC1, o.pct, o.numero_contrato));
+      if (copC2 > 0)    r.lineas_factura.push(_linea('COLOR2', c2Anterior, c2Eff, copC2, o.precioC2, o.pct, o.numero_contrato));
+      if (copC3 > 0)    r.lineas_factura.push(_linea('COLOR3', c3Anterior, c3Eff, copC3, o.precioC3, o.pct, o.numero_contrato));
     } else if (tipoDetectado === 'BN_AND_COLOR') {
-      if (copiasC1 > 0) r.lineas_factura.push(_linea('COLOR', c1Anterior, c1Eff, copiasC1, o.precioC1, o.pct));
+      if (copiasC1 > 0) r.lineas_factura.push(_linea('COLOR', c1Anterior, c1Eff, copiasC1, o.precioC1, o.pct, o.numero_contrato));
     }
 
     resultados.push(r);
@@ -311,4 +423,5 @@ module.exports = {
   toInt,
   toFloat,
   parsearFecha,
+  ANOMALY_THRESHOLD,
 };

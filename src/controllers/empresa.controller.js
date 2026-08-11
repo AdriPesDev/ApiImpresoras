@@ -57,21 +57,29 @@ class EmpresaController {
     try {
       const empresaData = req.body;
 
-      // Validar datos requeridos
-      if (!empresaData.dolibarr_id || !empresaData.nombre_oficial) {
+      // dolibarr_id solo es obligatorio si la empresa SÍ se va a facturar: las
+      // marcadas excluir_facturacion (máquinas internas/nunca facturables) no
+      // necesitan tercero real en Dolibarr — dolibarr_id admite NULL (la
+      // columna permite varios NULL bajo el índice único).
+      if (
+        (!empresaData.dolibarr_id && !empresaData.excluir_facturacion) ||
+        !empresaData.nombre_oficial
+      ) {
         return res.status(400).json({
           error: "Faltan campos requeridos: dolibarr_id y nombre_oficial",
         });
       }
 
-      // Verificar si ya existe
-      const existente = await this.empresaModel.findByDolibarrId(
-        empresaData.dolibarr_id,
-      );
-      if (existente) {
-        return res.status(400).json({
-          error: "Ya existe una empresa con ese dolibarr_id",
-        });
+      // Verificar si ya existe (solo aplica si trae dolibarr_id)
+      if (empresaData.dolibarr_id) {
+        const existente = await this.empresaModel.findByDolibarrId(
+          empresaData.dolibarr_id,
+        );
+        if (existente) {
+          return res.status(400).json({
+            error: "Ya existe una empresa con ese dolibarr_id",
+          });
+        }
       }
 
       const nuevaEmpresa = await this.empresaModel.create(empresaData);

@@ -6,12 +6,13 @@ class ConsumoModel {
   async findAll(filtros = {}) {
     let query = `
       SELECT c.*, i.serial_number, i.modelo, e.nombre_oficial,
-             i.tipo_facturacion, i.precio_copia_bn, i.precio_copia_color1, 
-             i.precio_copia_color2, i.precio_copia_color3
+             i.tipo_facturacion, i.precio_copia_bn, i.precio_copia_color1,
+             i.precio_copia_color2, i.precio_copia_color3,
+             EXISTS(SELECT 1 FROM logs_facturacion lf WHERE lf.consumo_id = c.id) AS tiene_factura_dolibarr
       FROM consumos_mensuales c
       JOIN impresoras i ON c.impresora_id = i.id
       LEFT JOIN empresas e ON i.empresa_id = e.id
-      WHERE 1=1
+      WHERE (e.excluir_facturacion IS NULL OR e.excluir_facturacion = 0)
     `;
     const params = [];
 
@@ -134,6 +135,39 @@ class ConsumoModel {
   async marcarFacturado(id) {
     await this.pool.query(
       "UPDATE consumos_mensuales SET facturado = 1 WHERE id = ?",
+      [id],
+    );
+    return this.findById(id);
+  }
+
+  // Deshace un marcado manual (facturado a mano en Dolibarr, sin pasar por
+  // "Generar facturas") para poder corregir un clic accidental. NUNCA debe
+  // desmarcar un consumo con una factura real ya creada por la app —eso lo
+  // comprueba el controller antes de llamar aquí— para no reofrecerlo luego
+  // en la selección y facturarlo dos veces.
+  async desmarcarFacturado(id) {
+    await this.pool.query(
+      "UPDATE consumos_mensuales SET facturado = 0 WHERE id = ?",
+      [id],
+    );
+    return this.findById(id);
+  }
+
+  async tieneFacturaDolibarr(id) {
+    const [rows] = await this.pool.query(
+      "SELECT 1 FROM logs_facturacion WHERE consumo_id = ? LIMIT 1",
+      [id],
+    );
+    return rows.length > 0;
+  }
+
+  // Confirma manualmente que una primera lectura con muchas copias SÍ es
+  // consumo real a facturar (motorFacturacion.procesarImpresora respeta este
+  // flag vía forzarPrimeraLectura). No factura por sí solo: solo desbloquea
+  // que la próxima vez que se genere/previsualice la factura sí se incluya.
+  async confirmarPrimeraLectura(id) {
+    await this.pool.query(
+      "UPDATE consumos_mensuales SET primera_lectura_confirmada = 1 WHERE id = ?",
       [id],
     );
     return this.findById(id);

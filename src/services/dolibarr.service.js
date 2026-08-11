@@ -3,8 +3,15 @@ class DolibarrService {
     this._cache = new Map();
   }
 
+  // DOLIBARR_URL puede venir con o sin el sufijo /api/index.php (el .env.example
+  // lo documenta CON sufijo, y así es como se configura en este proyecto) — se
+  // normaliza aquí para que _get/post, que siempre añaden /api/index.php/, no
+  // acaben duplicando la ruta (".../api/index.php/api/index.php/...") y
+  // devolviendo un 501 "API not found" de Dolibarr.
   _baseUrl() {
-    return process.env.DOLIBARR_URL?.replace(/\/$/, "");
+    return process.env.DOLIBARR_URL
+      ?.replace(/\/$/, "")
+      .replace(/\/api\/index\.php$/i, "");
   }
 
   _headers() {
@@ -47,6 +54,34 @@ class DolibarrService {
     return t;
   }
 
+  // Solo tolera diferencias de mayúsculas/acentos/espacios — cualquier otra
+  // diferencia (puntuación, forma jurídica, nombre editado en Kyofleet, etc.)
+  // debe contar como "no es la misma empresa" y por tanto no facturar sola.
+  _normalizarNombre(nombre) {
+    return nombre
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, " ");
+  }
+
+  // Dolibarr responde 404 "No third parties found" cuando una búsqueda no
+  // encuentra NADA (en vez de un array vacío con 200) — _get() lanza excepción
+  // ante cualquier status no-ok. Sin este envoltorio, un 404 en el nivel 1
+  // (coincidencia exacta, la que más falla por acentos/puntuación) abortaba
+  // TODA la cadena de fallback y nunca se llegaba al nivel 2 (candidatos por
+  // LIKE + igualdad normalizada), que es el que encuentra la mayoría de
+  // empresas reales cuyo único problema es acentos/mayúsculas.
+  async _buscarThirdparties(params) {
+    try {
+      const res = await this._get("thirdparties", params);
+      return Array.isArray(res) ? res : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
   async buscarTercero(nombre) {
     if (process.env.DOLIBARR_MOCK === "true") {
       const fake = { id: 99999, nom: nombre, _source: "mock" };
@@ -56,37 +91,32 @@ class DolibarrService {
     if (this._cache.has(nombre)) return this._cache.get(nombre);
 
     try {
-      // Level 1: exact match
-      let res = await this._get("thirdparties", {
+      // Level 1: exact match (fast path, no normalization needed)
+      let res = await this._buscarThirdparties({
         sqlfilters: `(t.nom:=:'${nombre}')`,
       });
-      if (Array.isArray(res) && res.length) {
+      if (res.length) {
         const t = this._normalizar(res[0]);
         this._cache.set(nombre, t);
         return t;
       }
 
-      // Level 2: prefix LIKE
-      res = await this._get("thirdparties", {
-        sqlfilters: `(t.nom:like:'${nombre}%')`,
-      });
-      if (Array.isArray(res) && res.length) {
-        const t = this._normalizar(res[0]);
-        this._cache.set(nombre, t);
-        return t;
-      }
-
-      // Level 3: keyword search — all significant words (≥3 chars) must appear in the Dolibarr name
-      const palabras = nombre.split(/\s+/).filter((p) => p.length >= 3);
-      if (palabras.length) {
-        res = await this._get("thirdparties", {
-          sqlfilters: `(t.nom:like:'%${palabras[0]}%')`,
+      // Level 2: fetch candidates by a broad LIKE on the first significant
+      // word, then require EQUALITY (not substring) once both sides are
+      // normalized (case/accents/whitespace only). Any other difference —
+      // punctuation, legal form, a name edited in Kyofleet — must NOT match:
+      // it means it's not (verifiably) the same company, so it should be
+      // left unresolved rather than billed against a guess.
+      const primeraPalabra = nombre.split(/\s+/).find((p) => p.length >= 3);
+      if (primeraPalabra) {
+        res = await this._buscarThirdparties({
+          sqlfilters: `(t.nom:like:'%${primeraPalabra}%')`,
         });
-        if (Array.isArray(res) && res.length) {
-          const palabrasLower = palabras.map((p) => p.toLowerCase());
+        if (res.length) {
+          const objetivo = this._normalizarNombre(nombre);
           for (const tercero of res) {
-            const nomDoli = (tercero.nom || tercero.name || "").toLowerCase();
-            if (palabrasLower.every((p) => nomDoli.includes(p))) {
+            const nomDoli = tercero.nom || tercero.name || "";
+            if (this._normalizarNombre(nomDoli) === objetivo) {
               const t = this._normalizar(tercero);
               this._cache.set(nombre, t);
               return t;

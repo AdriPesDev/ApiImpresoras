@@ -2,10 +2,8 @@ const crypto = require("crypto");
 // Motor de cálculo de facturación compartido (mismo que usa la emisión de
 // facturas). El puente lecturas → consumos_mensuales lo reutiliza para que el
 // consumo se calcule con UNA sola lógica, idéntica a la app de Python.
-const { procesarImpresora } = require("./motorFacturacion");
-
-// Umbral de delta de copias para marcar una lectura como anómala (configurable).
-const ANOMALY_THRESHOLD = parseInt(process.env.ANOMALY_THRESHOLD, 10) || 10000;
+const { procesarImpresora, ANOMALY_THRESHOLD } = require("./motorFacturacion");
+const { obtenerLecturaApertura } = require("./aperturaPeriodo.service");
 
 function parsearFecha(valor) {
   if (!valor) return null;
@@ -143,6 +141,7 @@ class ImportacionService {
     let anomalias = 0;
     let consumosCalculados = 0;
     let importeEstimado = 0;
+    const impresorasNuevas = [];
 
     // Periodo de facturación del lote = el más frecuente en el CSV.
     // Garantiza que impresoras con timestamp histórico (contador sin cambios
@@ -172,6 +171,7 @@ class ImportacionService {
 
       if (resultado.empresa_actualizada) empresasActualizadas++;
       if (resultado.anomalia) anomalias++;
+      if (resultado.impresora_nueva) impresorasNuevas.push(resultado.impresora_nueva);
       if (
         resultado.consumo &&
         resultado.consumo.facturable &&
@@ -191,6 +191,7 @@ class ImportacionService {
       anomalias,
       consumosCalculados,
       importeEstimado: Math.round(importeEstimado * 100) / 100,
+      impresorasNuevas,
     };
   }
 
@@ -210,6 +211,7 @@ class ImportacionService {
         importe_estimado: agg.importeEstimado,
       },
       resultados: agg.resultados,
+      impresoras_nuevas: agg.impresorasNuevas,
     };
   }
 
@@ -255,6 +257,21 @@ class ImportacionService {
     if (!impRows.length) {
       resultado.estado = "no_encontrada";
       resultado.detalle = `Serie ${serial} no existe en la BD.`;
+      // Se acumula para que el import la devuelva bajo impresoras_nuevas: el
+      // frontend avisa y ofrece un alta rápida (con precios) en vez de
+      // saltarla en silencio (POST /api/impresoras la da de alta).
+      resultado.impresora_nueva = {
+        serial_number: serial,
+        modelo,
+        empresa_csv: empresaNombre,
+        ultima_lectura: {
+          bn: bnTotal,
+          c1: c1Total,
+          c2: c2Total,
+          c3: c3Total,
+          fecha: fila.fecha_lectura,
+        },
+      };
       return resultado;
     }
 
@@ -437,18 +454,23 @@ class ImportacionService {
       if (!existCmSP.length || !existCmSP[0].facturado) {
         const bnFin = toInt(fila.bn_total);
         const c1Fin = toInt(fila.color1_total) || toInt(fila.color_total);
+        const c2Fin = toInt(fila.color2_total);
+        const c3Fin = toInt(fila.color3_total);
         await querier.query(
           `INSERT INTO consumos_mensuales
              (impresora_id, periodo, copias_bn_mes, copias_color_mes, copias_color1_mes,
               copias_color2_mes, copias_color3_mes, importe_bn, importe_color, importe_color1,
               importe_color2, importe_color3, total_facturar, facturado,
-              contador_bn_inicio, contador_bn_fin, contador_color1_inicio, contador_color1_fin)
-           VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, 0, ?)
+              contador_bn_inicio, contador_bn_fin, contador_color1_inicio, contador_color1_fin,
+              contador_color2_inicio, contador_color2_fin, contador_color3_inicio, contador_color3_fin)
+           VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, 0, ?, 0, ?, 0, ?)
            ON DUPLICATE KEY UPDATE
              copias_bn_mes = 0, total_facturar = 0,
              contador_bn_fin = VALUES(contador_bn_fin),
-             contador_color1_fin = VALUES(contador_color1_fin)`,
-          [impresora_id, periodo, bnFin, c1Fin],
+             contador_color1_fin = VALUES(contador_color1_fin),
+             contador_color2_fin = VALUES(contador_color2_fin),
+             contador_color3_fin = VALUES(contador_color3_fin)`,
+          [impresora_id, periodo, bnFin, c1Fin, c2Fin, c3Fin],
         );
       }
       return {
@@ -478,22 +500,17 @@ class ImportacionService {
       [serial],
     );
 
-    // Lectura de apertura del periodo: la última anterior al día 1 del periodo.
-    // Usar la frontera del mes lo hace robusto frente a lecturas duplicadas
-    // dentro del propio periodo (re-importar el mismo CSV no descuadra el diff).
-    const [prevRows] = await querier.query(
-      `SELECT copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total,
-              fecha_lectura, contador_negativo
-       FROM registros_contadores
-       WHERE impresora_id = ? AND fecha_lectura < ?
-       ORDER BY fecha_lectura DESC LIMIT 1`,
-      [impresora_id, `${periodo}-01 00:00:00`],
-    );
-    let previa = prevRows[0] || null;
+    // Lectura de apertura del periodo = cierre del periodo anterior YA
+    // calculado para esta impresora (ver aperturaPeriodo.service.js) — no la
+    // última fila de registros_contadores por fecha, que se rompe cuando
+    // Kyofleet repite la misma lectura antigua en varios periodos seguidos.
+    let previa = await obtenerLecturaApertura(querier, impresora_id, periodo);
 
-    // Si no hay lectura anterior al inicio del periodo, buscar la lectura más
-    // antigua dentro del periodo antes de la actual. Detecta resets intra-periodo:
-    // ej. se importó 19.500 a principios de junio y 411 tras un reset a final de mes.
+    // Si no hay periodo anterior con consumo calculado (primera vez real de
+    // esta impresora en el sistema), buscar si hay una lectura más antigua
+    // dentro del propio periodo antes de la actual. Detecta resets
+    // intra-periodo: ej. se importó 19.500 a principios de junio y 411 tras
+    // un reset a final de mes.
     if (!previa && fechaCSV) {
       const [intraRows] = await querier.query(
         `SELECT copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total,
@@ -507,9 +524,21 @@ class ImportacionService {
       previa = intraRows[0] || null;
     }
 
+    // Si este periodo ya se confirmó como "primera lectura alta" (revisión
+    // manual), un reimport del mismo CSV no debe volver a dejarlo pendiente
+    // de confirmación — se respeta la decisión ya tomada.
+    const [existConfirmRows] = await querier.query(
+      "SELECT primera_lectura_confirmada FROM consumos_mensuales WHERE impresora_id = ? AND periodo = ?",
+      [impresora_id, periodo],
+    );
+    const forzarPrimeraLectura = Boolean(
+      existConfirmRows[0]?.primera_lectura_confirmada,
+    );
+
     const resultados = procesarImpresora({
       fila,
       periodo,
+      forzarPrimeraLectura,
       preciosImpresora,
       ultimaLectura: previa,
       contratoLineas: contRows,
@@ -523,7 +552,11 @@ class ImportacionService {
       // Persistir registro 0-copias para que analizarFlota pueda incluir estas
       // impresoras en el reporte aunque tengan timestamps históricos (igual que
       // el sistema Python: el CSV del lote determina el scope, no la fecha de lectura).
-      if (estado === "sin_consumo" || estado === "contador_negativo") {
+      // "primera_lectura_alta" = primera lectura con demasiadas copias ya
+      // acumuladas (posible historial sin facturar): se guarda igualmente
+      // para poder calcular el delta en la próxima importación, pero no se
+      // factura nada hasta que se revise a mano.
+      if (estado === "sin_consumo" || estado === "contador_negativo" || estado === "primera_lectura_alta") {
         const d0 = resultados[0]?.detalle || {};
         const [existCm] = await querier.query(
           "SELECT facturado FROM consumos_mensuales WHERE impresora_id = ? AND periodo = ?",
@@ -539,8 +572,10 @@ class ImportacionService {
                 importe_color2, importe_color3,
                 total_facturar, facturado,
                 contador_bn_inicio, contador_bn_fin,
-                contador_color1_inicio, contador_color1_fin)
-             VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, ?, ?, ?)
+                contador_color1_inicio, contador_color1_fin,
+                contador_color2_inicio, contador_color2_fin,
+                contador_color3_inicio, contador_color3_fin)
+             VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                copias_bn_mes = 0, copias_color_mes = 0, copias_color1_mes = 0,
                copias_color2_mes = 0, copias_color3_mes = 0,
@@ -549,7 +584,11 @@ class ImportacionService {
                contador_bn_inicio = VALUES(contador_bn_inicio),
                contador_bn_fin    = VALUES(contador_bn_fin),
                contador_color1_inicio = VALUES(contador_color1_inicio),
-               contador_color1_fin    = VALUES(contador_color1_fin)`,
+               contador_color1_fin    = VALUES(contador_color1_fin),
+               contador_color2_inicio = VALUES(contador_color2_inicio),
+               contador_color2_fin    = VALUES(contador_color2_fin),
+               contador_color3_inicio = VALUES(contador_color3_inicio),
+               contador_color3_fin    = VALUES(contador_color3_fin)`,
             [
               impresora_id,
               periodo,
@@ -557,6 +596,10 @@ class ImportacionService {
               d0.bn_actual ?? 0,
               d0.c1_anterior ?? 0,
               d0.c1_actual ?? 0,
+              d0.c2_anterior ?? 0,
+              d0.c2_actual ?? 0,
+              d0.c3_anterior ?? 0,
+              d0.c3_actual ?? 0,
             ],
           );
         }
@@ -578,6 +621,10 @@ class ImportacionService {
     let bnFin = null;
     let c1Ini = null;
     let c1Fin = null;
+    let c2Ini = null;
+    let c2Fin = null;
+    let c3Ini = null;
+    let c3Fin = null;
     for (const r of facturables) {
       const d = r.detalle;
       copiasBN += toInt(d.copias_bn);
@@ -593,6 +640,10 @@ class ImportacionService {
       bnFin = toInt(d.bn_actual);
       c1Ini = toInt(d.c1_anterior);
       c1Fin = toInt(d.c1_actual);
+      c2Ini = toInt(d.c2_anterior);
+      c2Fin = toInt(d.c2_actual);
+      c3Ini = toInt(d.c3_anterior);
+      c3Fin = toInt(d.c3_actual);
     }
     const r2 = (n) => Math.round(n * 100) / 100;
     const totalRound = r2(total);
@@ -618,8 +669,9 @@ class ImportacionService {
           copias_bn_mes, copias_color_mes, copias_color1_mes, copias_color2_mes, copias_color3_mes,
           importe_bn, importe_color, importe_color1, importe_color2, importe_color3,
           total_facturar, facturado,
-          contador_bn_inicio, contador_bn_fin, contador_color1_inicio, contador_color1_fin)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+          contador_bn_inicio, contador_bn_fin, contador_color1_inicio, contador_color1_fin,
+          contador_color2_inicio, contador_color2_fin, contador_color3_inicio, contador_color3_fin)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          copias_bn_mes = VALUES(copias_bn_mes),
          copias_color_mes = VALUES(copias_color_mes),
@@ -635,7 +687,11 @@ class ImportacionService {
          contador_bn_inicio = VALUES(contador_bn_inicio),
          contador_bn_fin = VALUES(contador_bn_fin),
          contador_color1_inicio = VALUES(contador_color1_inicio),
-         contador_color1_fin = VALUES(contador_color1_fin)`,
+         contador_color1_fin = VALUES(contador_color1_fin),
+         contador_color2_inicio = VALUES(contador_color2_inicio),
+         contador_color2_fin = VALUES(contador_color2_fin),
+         contador_color3_inicio = VALUES(contador_color3_inicio),
+         contador_color3_fin = VALUES(contador_color3_fin)`,
       [
         impresora_id,
         periodo,
@@ -654,6 +710,10 @@ class ImportacionService {
         bnFin,
         c1Ini,
         c1Fin,
+        c2Ini,
+        c2Fin,
+        c3Ini,
+        c3Fin,
       ],
     );
 

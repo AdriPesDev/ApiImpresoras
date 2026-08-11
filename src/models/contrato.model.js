@@ -41,7 +41,7 @@ class ContratoModel {
              ci.precio_minimo_mensual,
              ci.tipo_copias_incluidas,
              ci.activo,
-             c.fecha_inicio, c.fecha_fin,
+             c.fecha_inicio, c.fecha_fin, c.factura_separada,
              e.nombre_oficial AS empresa_nombre,
              i.serial_number  AS impresora_serial,
              i.modelo         AS impresora_modelo
@@ -121,14 +121,15 @@ class ContratoModel {
     if (existing.length) return existing[0].id;
 
     const [ins] = await conn.query(
-      `INSERT INTO contratos (numero_contrato, empresa_id, fecha_inicio, fecha_fin, activo)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO contratos (numero_contrato, empresa_id, fecha_inicio, fecha_fin, activo, factura_separada)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         data.numero_contrato,
         data.empresa_id ?? null,
         data.fecha_inicio,
         data.fecha_fin ?? null,
         data.activo ?? 1,
+        data.factura_separada ? 1 : 0,
       ],
     );
     return ins.insertId;
@@ -219,6 +220,10 @@ class ContratoModel {
         numero_contrato: data.numero_contrato,
         fecha_inicio: data.fecha_inicio,
         fecha_fin: data.fecha_fin,
+        factura_separada:
+          data.factura_separada !== undefined
+            ? (data.factura_separada ? 1 : 0)
+            : undefined,
       };
       const hFields = [];
       const hParams = [];

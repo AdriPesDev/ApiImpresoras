@@ -93,18 +93,28 @@ class ImpresoraController {
         });
       }
 
-      // Asegurar valores por defecto para colores
-      const data = {
-        ...impresoraData,
-        precio_copia_bn: impresoraData.precio_copia_bn ?? 0.01,
-        precio_copia_color1: impresoraData.precio_copia_color1 ?? 0.03,
+      // Sin precio ⇒ 0 (no inventamos 0.01/0.03: eso facturaría de más por
+      // descuido). Si no se ha tarifado ninguna copia, la impresora se crea
+      // inactiva para que no entre en la flota facturable hasta tarificarla
+      // a mano (activa explícita en el body siempre gana).
+      const precios = {
+        precio_copia_bn: impresoraData.precio_copia_bn ?? 0,
+        precio_copia_color1: impresoraData.precio_copia_color1 ?? 0,
         precio_copia_color2: impresoraData.precio_copia_color2 ?? 0,
         precio_copia_color3: impresoraData.precio_copia_color3 ?? 0,
+      };
+      const sinPrecio = Object.values(precios).every((p) => Number(p) === 0);
+
+      const data = {
+        ...impresoraData,
+        ...precios,
         tipo_facturacion:
           impresoraData.tipo_facturacion ||
-          this._detectarTipoFacturacion(impresoraData),
+          this._detectarTipoFacturacion(precios),
         activa:
-          impresoraData.activa !== undefined ? impresoraData.activa : true,
+          impresoraData.activa !== undefined
+            ? impresoraData.activa
+            : !sinPrecio,
       };
 
       const nuevaImpresora = await this.impresoraModel.create(data);

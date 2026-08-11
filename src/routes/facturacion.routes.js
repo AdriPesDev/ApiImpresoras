@@ -10,5 +10,11 @@ module.exports = function createFacturacionRoutes(controller) {
   // POST /api/facturacion/ejecutar
   router.post('/ejecutar', facturacionValidations.procesar, controller.ejecutar);
 
+  // GET /api/facturacion/informe?periodo=YYYY-MM — Excel de solo lectura, no factura nada
+  router.get('/informe', controller.informe);
+
+  // GET /api/facturacion/reportes — histórico de Excel ya generados
+  router.get('/reportes', controller.reportes);
+
   return router;
 };

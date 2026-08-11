@@ -41,14 +41,20 @@ class EmpresaModel {
 
   async create(data) {
     const [result] = await this.pool.query(
-      'INSERT INTO empresas (dolibarr_id, nombre_oficial, cif, activo) VALUES (?, ?, ?, ?)',
-      [data.dolibarr_id, data.nombre_oficial, data.cif ?? null, data.activo ?? true],
+      'INSERT INTO empresas (dolibarr_id, nombre_oficial, cif, activo, excluir_facturacion) VALUES (?, ?, ?, ?, ?)',
+      [
+        data.dolibarr_id ?? null,
+        data.nombre_oficial,
+        data.cif ?? null,
+        data.activo ?? true,
+        data.excluir_facturacion ? 1 : 0,
+      ],
     );
     return this.findById(result.insertId);
   }
 
   async update(id, data) {
-    const allowed = ['dolibarr_id', 'nombre_oficial', 'cif', 'activo'];
+    const allowed = ['dolibarr_id', 'nombre_oficial', 'cif', 'activo', 'excluir_facturacion'];
     const fields = [];
     const params = [];
 

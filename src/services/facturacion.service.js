@@ -5,6 +5,18 @@ const {
   nombreMes,
   timestampMesSiguiente,
 } = require("./motorFacturacion");
+const { obtenerLecturaApertura } = require("./aperturaPeriodo.service");
+
+// 'YYYY-MM' del mes siguiente, como frontera '<' para consultas SQL de fecha.
+function siguienteMes(periodo) {
+  let [anio, mes] = periodo.split("-").map(Number);
+  mes += 1;
+  if (mes > 12) {
+    mes = 1;
+    anio += 1;
+  }
+  return `${anio}-${String(mes).padStart(2, "0")}-01 00:00:00`;
+}
 
 class FacturacionService {
   constructor(pool, dolibarrService) {
@@ -41,7 +53,7 @@ class FacturacionService {
               ci.precio_bn, ci.precio_color1, ci.precio_color2, ci.precio_color3,
               ci.copias_bn_incluidas, ci.copias_c1_incluidas,
               ci.copias_c2_incluidas, ci.copias_c3_incluidas,
-              ci.precio_minimo_mensual, c.numero_contrato
+              ci.precio_minimo_mensual, c.numero_contrato, c.factura_separada
        FROM contrato_impresoras ci
        INNER JOIN contratos c ON c.id = ci.contrato_id
        INNER JOIN impresoras i ON i.id = ci.impresora_id
@@ -95,6 +107,17 @@ class FacturacionService {
     });
   }
 
+  // Empresas que NUNCA se facturan (máquinas internas propias, p.ej. Nethive),
+  // marcadas a mano en la tabla `empresas`. Coincidencia exacta por nombre,
+  // igual que el resto de la resolución de empresa.
+  async _empresaExcluida(empresaNombre) {
+    const [rows] = await this.pool.query(
+      "SELECT 1 FROM empresas WHERE nombre_oficial = ? AND excluir_facturacion = TRUE LIMIT 1",
+      [empresaNombre],
+    );
+    return rows.length > 0;
+  }
+
   // Resuelve el tercero (socid) de una empresa para emitir en Dolibarr.
   // Prioriza el dolibarr_id ya guardado en `empresas` (verificado fiable y que
   // coincide con la búsqueda por nombre); si no hay fila o el id no es válido,
@@ -131,11 +154,22 @@ class FacturacionService {
   // ── Group by company and build invoice payloads ──
 
   async _agruparYConstruir(resultados, periodo) {
+    // Se agrupa por EMPRESA + CONTRATO cuando el contrato está marcado como
+    // factura_separada: una misma empresa puede tener varias impresoras bajo
+    // contratos distintos (p.ej. una sede con ubicación en las líneas y otra
+    // sin ella) y solo esas líneas concretas deben salir en su propia factura,
+    // con su número de contrato. El resto (sin contrato o con contrato normal)
+    // va en la factura general de la empresa, como hasta ahora.
     const grupos = new Map();
     for (const r of resultados) {
       if (r.estado === "facturable") {
-        if (!grupos.has(r.empresa)) grupos.set(r.empresa, []);
-        grupos.get(r.empresa).push(r);
+        const separada = Boolean(r.detalle?.factura_separada);
+        const numeroContrato = separada ? r.detalle?.numero_contrato || null : null;
+        const clave = separada ? `${r.empresa}::${numeroContrato}` : r.empresa;
+        if (!grupos.has(clave)) {
+          grupos.set(clave, { empresa: r.empresa, numeroContrato, items: [] });
+        }
+        grupos.get(clave).items.push(r);
       }
     }
 
@@ -151,7 +185,21 @@ class FacturacionService {
       ).getTime() / 1000,
     );
 
-    for (const [empresaNombre, impresoras] of grupos) {
+    for (const { empresa: empresaNombre, numeroContrato, items: impresoras } of grupos.values()) {
+      // Empresas marcadas "excluir_facturacion" (máquinas internas propias,
+      // p.ej. las del propio Nethive) nunca se facturan, aunque su nombre
+      // exacto exista como tercero en Dolibarr — la exclusión se comprueba
+      // ANTES de buscar en Dolibarr, así no depende de que nadie olvide crear
+      // ese tercero.
+      if (await this._empresaExcluida(empresaNombre)) {
+        for (const imp of impresoras) {
+          imp.estado = "empresa_excluida";
+          imp.detalle.msg =
+            "Empresa marcada para no facturar nunca (excluir_facturacion). No se emite factura.";
+        }
+        continue;
+      }
+
       const tercero = await this._resolverTercero(empresaNombre);
       if (!tercero) {
         empresasNoEncontradas.push(empresaNombre);
@@ -175,7 +223,8 @@ class FacturacionService {
         socid: parseInt(tercero.id, 10),
         type: 0,
         date: fechaEmision,
-        note_public: `Facturacion automatica - ${nombreMes(periodo)} - ${empresaNombre}`,
+        note_public: `Facturacion automatica - ${nombreMes(periodo)} - ${empresaNombre}`
+          + (numeroContrato ? ` - Contrato ${numeroContrato}` : ""),
         ...(condId > 0 ? { cond_reglement_id: condId } : {}),
         ...(modeId > 0 ? { mode_reglement_id: modeId } : {}),
         lines: todasLineas.map((l) => ({
@@ -193,6 +242,7 @@ class FacturacionService {
         empresa_dolibarr: tercero.nom,
         socid: parseInt(tercero.id, 10),
         periodo,
+        numero_contrato: numeroContrato,
         num_impresoras: impresoras.length,
         seriales: impresoras.map((i) => i.serial_number),
         num_lineas: todasLineas.length,
@@ -225,7 +275,8 @@ class FacturacionService {
       `SELECT cm.id, cm.impresora_id, cm.periodo,
               cm.copias_bn_mes, cm.copias_color1_mes, cm.copias_color2_mes, cm.copias_color3_mes,
               cm.importe_bn, cm.importe_color1, cm.importe_color2, cm.importe_color3, cm.total_facturar,
-              cm.facturado, i.serial_number, i.modelo, e.nombre_oficial AS empresa_nombre
+              cm.facturado, cm.primera_lectura_confirmada,
+              i.serial_number, i.modelo, e.nombre_oficial AS empresa_nombre
        FROM consumos_mensuales cm
        INNER JOIN impresoras i ON i.id = cm.impresora_id
        LEFT  JOIN empresas e ON e.id = i.empresa_id
@@ -246,13 +297,20 @@ class FacturacionService {
       empresa_nombre: empresaNombre,
     } = consumo;
 
+    // "Lectura actual" del periodo = la más reciente hasta el final del
+    // periodo (no "la que caiga exactamente en ese mes calendario"). Una
+    // impresora puede tener su única lectura con fecha antigua (el CSV trae
+    // la última fecha real por máquina, no una fecha de lote uniforme) pero
+    // el consumo se archivó bajo el periodo del lote (periodoFallback en el
+    // import) — filtrar por mes exacto la dejaba fuera en silencio, sin
+    // facturar y sin aparecer siquiera como excluida.
     const [curRows] = await this.pool.query(
       `SELECT copias_bn_total, copias_color_total, copias_color1_total,
               copias_color2_total, copias_color3_total, fecha_lectura
        FROM registros_contadores
-       WHERE impresora_id = ? AND DATE_FORMAT(fecha_lectura, '%Y-%m') = ?
+       WHERE impresora_id = ? AND fecha_lectura < ?
        ORDER BY fecha_lectura DESC LIMIT 1`,
-      [impresora_id, periodo],
+      [impresora_id, siguienteMes(periodo)],
     );
     if (!curRows.length) return [];
     const cur = curRows[0];
@@ -273,20 +331,21 @@ class FacturacionService {
 
     const preciosImpresora = await this._getPreciosImpresora(serial);
     const contratoLineas = await this._getContratoLineas(serial);
-    const [prevRows] = await this.pool.query(
-      `SELECT copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total,
-              fecha_lectura, contador_negativo
-       FROM registros_contadores
-       WHERE impresora_id = ? AND fecha_lectura < ?
-       ORDER BY fecha_lectura DESC LIMIT 1`,
-      [impresora_id, `${periodo}-01 00:00:00`],
-    );
-    let previa = prevRows[0] || null;
+    // "Lectura anterior" = cierre del periodo anterior YA calculado para esta
+    // impresora (ver aperturaPeriodo.service.js), NO "la última fila de
+    // registros_contadores antes de `cur`". Esto último se rompe cuando
+    // Kyofleet repite la misma lectura antigua (sin cambios reales) en varios
+    // periodos seguidos — cada periodo encontraba "nada antes de esa fecha" y
+    // volvía a facturar el mismo delta otra vez (bug real: V7F7106184 se
+    // facturó dos veces el mismo consumo, en 2026-06 y en 2026-07, detectado
+    // por el usuario 2026-08-11).
+    let previa = await obtenerLecturaApertura(this.pool, impresora_id, periodo);
 
-    // Si no hay lectura anterior al inicio del periodo (primera vez en el sistema
-    // o tras limpiar datos) pero existen lecturas previas dentro del mismo mes,
-    // usamos la más antigua como referencia. Detecta resets intra-periodo:
-    // ej. se importó 19.500 a principios de junio y 411 tras un reset a final de mes.
+    // Si no hay periodo anterior con consumo calculado (primera vez real de
+    // esta impresora en el sistema) pero existen lecturas previas dentro del
+    // mismo mes, usamos la más antigua como referencia. Detecta resets
+    // intra-periodo: ej. se importó 19.500 a principios de junio y 411 tras
+    // un reset a final de mes.
     if (!previa && cur) {
       const [intraRows] = await this.pool.query(
         `SELECT copias_bn_total, copias_color1_total, copias_color2_total, copias_color3_total,
@@ -306,6 +365,7 @@ class FacturacionService {
       preciosImpresora,
       ultimaLectura: previa,
       contratoLineas,
+      forzarPrimeraLectura: Boolean(consumo.primera_lectura_confirmada),
     });
     const fechaAnterior = previa?.fecha_lectura || null;
     resultadosMotor.forEach((r) => {
@@ -354,6 +414,10 @@ class FacturacionService {
         consumos.map((c) => this._resultadosParaConsumo(c, periodo)),
       )
     ).flat();
+    const serialToResultado = new Map();
+    for (const r of resultados) {
+      if (r.estado === "facturable") serialToResultado.set(r.serial_number, r);
+    }
 
     const { facturas, empresasNoEncontradas } = await this._agruparYConstruir(
       resultados,
@@ -386,7 +450,8 @@ class FacturacionService {
         for (const serial of factura.seriales) {
           const consumo = serialToConsumo.get(serial);
           if (consumo && !consumosPersistidos.has(consumo.id)) {
-            await this._persistirConsumoFacturado(consumo);
+            const resultado = serialToResultado.get(serial);
+            await this._persistirConsumoFacturado(consumo, resultado?.detalle);
             consumosPersistidos.add(consumo.id);
           }
         }
@@ -421,14 +486,16 @@ class FacturacionService {
     // contaminar la categoría sin_precio con falsos positivos.
     const [printers] = await this.pool.query(
       `SELECT DISTINCT i.id AS impresora_id, i.serial_number, i.modelo,
-              e.nombre_oficial AS empresa_nombre
+              e.nombre_oficial AS empresa_nombre,
+              cm.primera_lectura_confirmada
        FROM registros_contadores rc
        INNER JOIN impresoras i ON i.id = rc.impresora_id
        LEFT  JOIN empresas e ON e.id = i.empresa_id
+       LEFT  JOIN consumos_mensuales cm ON cm.impresora_id = i.id AND cm.periodo = ?
        WHERE DATE_FORMAT(rc.fecha_lectura, '%Y-%m') = ?
          AND i.activa = TRUE
        ORDER BY e.nombre_oficial, i.serial_number`,
-      [periodo],
+      [periodo, periodo],
     );
 
     // Impresoras inactivas con lectura en el periodo → hoja de aviso en el Excel.
@@ -840,18 +907,36 @@ class FacturacionService {
   }
 
   // ── Persist after billing ─────────────────────
-  // La lectura ya se guardó al importar y el consumo ya existe (facturado=0):
-  // aquí solo se marca facturado=1 y se registra en logs_facturacion (columnas
-  // reales del esquema; NO existe id_factura_dolibarr en esa tabla).
-
-  async _persistirConsumoFacturado(consumo) {
+  // La lectura ya se guardó al importar, pero el consumo cargado por
+  // _cargarConsumos puede tener copias_bn_mes/total_facturar desactualizados
+  // (0 en el caso de una primera lectura confirmada a mano, o distintos si
+  // hay reparto/mínimo de contrato) — el motor recalcula el importe real en
+  // `_agruparYConstruir` y es ESE detalle (no el consumo original) el que hay
+  // que persistir, si no la factura sale bien en Dolibarr pero aquí se sigue
+  // viendo a 0€.
+  async _persistirConsumoFacturado(consumo, detalle) {
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
 
+      const copiasBn = detalle?.copias_bn ?? consumo.copias_bn_mes ?? 0;
+      const copiasC1 = detalle?.copias_c1 ?? consumo.copias_color1_mes ?? 0;
+      const copiasC2 = detalle?.copias_c2 ?? consumo.copias_color2_mes ?? 0;
+      const copiasC3 = detalle?.copias_c3 ?? consumo.copias_color3_mes ?? 0;
+      const importeBn = detalle?.importe_bn ?? consumo.importe_bn ?? 0;
+      const importeC1 = detalle?.importe_c1 ?? consumo.importe_color1 ?? 0;
+      const importeC2 = detalle?.importe_c2 ?? consumo.importe_color2 ?? 0;
+      const importeC3 = detalle?.importe_c3 ?? consumo.importe_color3 ?? 0;
+      const total = detalle?.importe_total ?? consumo.total_facturar ?? 0;
+
       await conn.query(
-        "UPDATE consumos_mensuales SET facturado = 1 WHERE id = ?",
-        [consumo.id],
+        `UPDATE consumos_mensuales
+           SET facturado = 1,
+               copias_bn_mes = ?, copias_color1_mes = ?, copias_color2_mes = ?, copias_color3_mes = ?,
+               importe_bn = ?, importe_color1 = ?, importe_color2 = ?, importe_color3 = ?,
+               total_facturar = ?
+         WHERE id = ?`,
+        [copiasBn, copiasC1, copiasC2, copiasC3, importeBn, importeC1, importeC2, importeC3, total, consumo.id],
       );
 
       await conn.query(
@@ -865,15 +950,15 @@ class FacturacionService {
           consumo.id,
           consumo.impresora_id,
           consumo.periodo,
-          consumo.copias_bn_mes ?? 0,
-          consumo.copias_color1_mes ?? 0,
-          consumo.copias_color2_mes ?? 0,
-          consumo.copias_color3_mes ?? 0,
-          consumo.importe_bn ?? 0,
-          consumo.importe_color1 ?? 0,
-          consumo.importe_color2 ?? 0,
-          consumo.importe_color3 ?? 0,
-          consumo.total_facturar ?? 0,
+          copiasBn,
+          copiasC1,
+          copiasC2,
+          copiasC3,
+          importeBn,
+          importeC1,
+          importeC2,
+          importeC3,
+          total,
         ],
       );
 

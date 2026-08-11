@@ -1,6 +1,6 @@
 const FacturacionService = require('../services/facturacion.service');
 const DolibarrService = require('../services/dolibarr.service');
-const { generarReporteExcel } = require('../services/reporteExcel.service');
+const { generarReporteExcel, listarReportes } = require('../services/reporteExcel.service');
 
 class FacturacionController {
   constructor(pool) {
@@ -65,6 +65,39 @@ class FacturacionController {
         ...resultado,
         excel: excelInfo ? { nombre: excelInfo.nombre, url: `/exports/${excelInfo.nombre}` } : null,
       });
+    } catch (error) {
+      next(error);
+    }
+  };
+  // GET /api/facturacion/informe?periodo=YYYY-MM
+  // Genera el Excel de análisis de flota sin tocar Dolibarr ni facturar nada
+  // (analizarFlota ya es de solo lectura). Útil para revisar/exportar antes
+  // de decidir qué facturar, o simplemente para tener el reporte del mes.
+  informe = async (req, res, next) => {
+    try {
+      const { periodo } = req.query;
+      if (!periodo) return res.status(400).json({ error: 'Falta el periodo.' });
+
+      const analisis = await this.facturacionService.analizarFlota(periodo);
+      const origenCsv = await this.facturacionService.getOrigenCsvPeriodo(periodo);
+      const excelInfo = await generarReporteExcel(analisis, {
+        origenCsv: origenCsv || 'N/D',
+        modo: 'informe',
+      });
+
+      res.json({ excel: { nombre: excelInfo.nombre, url: `/exports/${excelInfo.nombre}` } });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // GET /api/facturacion/reportes
+  // Lista los Excel ya generados (por ejecutar() o por informe()) para poder
+  // descargarlos de nuevo sin tener que volver a generarlos.
+  reportes = async (req, res, next) => {
+    try {
+      const reportes = await listarReportes();
+      res.json(reportes.map((r) => ({ ...r, url: `/exports/${r.nombre}` })));
     } catch (error) {
       next(error);
     }

@@ -1,54 +1,60 @@
-const ExcelJS = require('exceljs');
-const path = require('path');
-const fs = require('fs').promises;
+const ExcelJS = require("exceljs");
+const path = require("path");
+const fs = require("fs").promises;
 
 // ── Paleta de colores ─────────────────────────────────────────────────────────
 const C = {
-  navy:        'FF1B3A6B',
-  navyLight:   'FFD6E0F0',
-  green:       'FF1E5C2D',
-  greenMid:    'FF2D8A4D',
-  greenLight:  'FFD6F0DC',
-  orange:      'FFC25A00',
-  orangeLight: 'FFFCE8D5',
-  gray:        'FF3D3D3D',
-  grayLight:   'FFD9D9D9',
-  red:         'FFCC0000',
-  redLight:    'FFFFD6D6',
-  purple:      'FF6B21A8',
-  purpleLight: 'FFF3E8FF',
-  amber:       'FFF0A500',
-  white:       'FFFFFFFF',
-  black:       'FF000000',
+  navy: "FF1B3A6B",
+  navyLight: "FFD6E0F0",
+  green: "FF1E5C2D",
+  greenMid: "FF2D8A4D",
+  greenLight: "FFD6F0DC",
+  orange: "FFC25A00",
+  orangeLight: "FFFCE8D5",
+  gray: "FF3D3D3D",
+  grayLight: "FFD9D9D9",
+  red: "FFCC0000",
+  redLight: "FFFFD6D6",
+  purple: "FF6B21A8",
+  purpleLight: "FFF3E8FF",
+  amber: "FFF0A500",
+  white: "FFFFFFFF",
+  black: "FF000000",
 };
 
 function fmtFecha(valor) {
-  if (!valor) return '';
+  if (!valor) return "";
   const d = valor instanceof Date ? valor : new Date(valor);
   if (isNaN(d.getTime())) return String(valor);
-  const pad = (n) => String(n).padStart(2, '0');
+  const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function fmtTimestamp() {
   const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
+  const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
 // ── Helpers de estilo ─────────────────────────────────────────────────────────
 function fill(argb) {
-  return { type: 'pattern', pattern: 'solid', fgColor: { argb } };
+  return { type: "pattern", pattern: "solid", fgColor: { argb } };
 }
 function font(opts = {}) {
   const { color: colorArg, size, bold, ...rest } = opts;
-  return { name: 'Arial', size: size || 11, bold: bold || false, color: { argb: colorArg || C.black }, ...rest };
+  return {
+    name: "Arial",
+    size: size || 11,
+    bold: bold || false,
+    color: { argb: colorArg || C.black },
+    ...rest,
+  };
 }
-function border(color = 'FFBFBFBF', style = 'thin') {
+function border(color = "FFBFBFBF", style = "thin") {
   const s = { style, color: { argb: color } };
   return { top: s, left: s, bottom: s, right: s };
 }
-function align(h = 'left', v = 'middle') {
+function align(h = "left", v = "middle") {
   return { horizontal: h, vertical: v, wrapText: false };
 }
 
@@ -63,21 +69,23 @@ function styleRange(ws, startRow, startCol, endRow, endCol, style) {
 
 // ── HOJA RESUMEN ──────────────────────────────────────────────────────────────
 function crearHojaResumen(wb, resultado, meta) {
-  const ws = wb.addWorksheet('Resumen');
+  const ws = wb.addWorksheet("Resumen");
   ws.views = [{ showGridLines: false }];
 
-  const periodo  = resultado.periodo;
-  const resumen  = resultado.resumen;
-  const estados  = resumen.estados_impresoras || {};
+  const periodo = resultado.periodo;
+  const resumen = resultado.resumen;
+  const estados = resumen.estados_impresoras || {};
 
-  const nNegIgn      = estados.contador_negativo_ignorado || 0; // alias usado en resumen
+  const nNegIgn = estados.contador_negativo_ignorado || 0; // alias usado en resumen
   // 'facturable' incluye las de negativo ignorado; se restan para que el conteo
   // coincida con la hoja "✅ Facturadas" (que las separa en su propia hoja).
-  const nFacturadas  = Math.max(0, (estados.facturable || 0) - nNegIgn);
-  const nSinConsumo  = estados.sin_consumo           || 0;
-  const nSinEmpresa  = estados.sin_empresa_dolibarr  || 0;
-  const nSinPrecio   = estados.sin_precio            || 0;
-  const nInactivas   = resumen.total_inactivas       || 0;
+  const nFacturadas = Math.max(0, (estados.facturable || 0) - nNegIgn);
+  const nSinConsumo = estados.sin_consumo || 0;
+  const nSinEmpresa = estados.sin_empresa_dolibarr || 0;
+  const nSinPrecio = estados.sin_precio || 0;
+  const nBaseline = estados.primera_lectura_alta || 0;
+  const nExcluidas = estados.empresa_excluida || 0;
+  const nInactivas = resumen.total_inactivas || 0;
 
   // Anchos de columna (6 cols: A-F)
   ws.columns = [
@@ -90,12 +98,12 @@ function crearHojaResumen(wb, resultado, meta) {
   ];
 
   // Fila 1: Título principal
-  ws.mergeCells('A1:F1');
-  const titleCell = ws.getCell('A1');
+  ws.mergeCells("A1:F1");
+  const titleCell = ws.getCell("A1");
   titleCell.value = `REPORTE DE FACTURACIÓN — Período ${periodo}`;
-  titleCell.font      = font({ size: 18, bold: true, color: C.white });
-  titleCell.fill      = fill(C.navy);
-  titleCell.alignment = align('center');
+  titleCell.font = font({ size: 18, bold: true, color: C.white });
+  titleCell.fill = fill(C.navy);
+  titleCell.alignment = align("center");
   ws.getRow(1).height = 36;
 
   // Fila 2: separador
@@ -103,21 +111,21 @@ function crearHojaResumen(wb, resultado, meta) {
 
   // Filas 3–6: Metadatos
   const meta_ = [
-    ['Origen CSV', meta.origenCsv || 'N/D'],
-    ['Modo',       meta.modo || 'BD'],
-    ['Generado',   resultado.generado || new Date().toISOString()],
-    ['Fecha reporte', fmtFecha(new Date())],
+    ["Origen CSV", meta.origenCsv || "N/D"],
+    ["Modo", meta.modo || "BD"],
+    ["Generado", resultado.generado || new Date().toISOString()],
+    ["Fecha reporte", fmtFecha(new Date())],
   ];
   meta_.forEach(([label, val], i) => {
     const row = 3 + i;
-    ws.getCell(row, 1).value     = label;
-    ws.getCell(row, 1).fill      = fill(C.navyLight);
-    ws.getCell(row, 1).font      = font({ bold: true, color: C.navy });
-    ws.getCell(row, 1).alignment = align('right');
+    ws.getCell(row, 1).value = label;
+    ws.getCell(row, 1).fill = fill(C.navyLight);
+    ws.getCell(row, 1).font = font({ bold: true, color: C.navy });
+    ws.getCell(row, 1).alignment = align("right");
     ws.mergeCells(row, 2, row, 6);
-    ws.getCell(row, 2).value     = val;
-    ws.getCell(row, 2).font      = font(); // valor sobre blanco, texto negro
-    ws.getCell(row, 2).alignment = align('left');
+    ws.getCell(row, 2).value = val;
+    ws.getCell(row, 2).font = font(); // valor sobre blanco, texto negro
+    ws.getCell(row, 2).alignment = align("left");
   });
 
   // Fila 7: separador
@@ -127,12 +135,16 @@ function crearHojaResumen(wb, resultado, meta) {
   // Cada caja = etiqueta (fila 9) + valor (fila 10) con el MISMO fondo claro,
   // texto oscuro y borde medium del color oscuro. Fila 8 = hueco superior.
   const kpiBoxes = [
-    { label: 'Total impresoras',        bg: C.navyLight,   fg: C.navy   },
-    { label: 'Importe facturable\n(con Dolibarr)', bg: C.orangeLight, fg: C.orange },
-    { label: 'Facturas creadas',        bg: C.greenLight,  fg: C.green  },
-    { label: 'Facturas con error',      bg: C.redLight,    fg: C.red    },
-    { label: 'Sin empresa Dolibarr',    bg: C.orangeLight, fg: C.orange },
-    { label: 'Impresoras\ninactivas',   bg: C.purpleLight, fg: C.purple },
+    { label: "Total impresoras", bg: C.navyLight, fg: C.navy },
+    {
+      label: "Importe facturable\n(con Dolibarr)",
+      bg: C.orangeLight,
+      fg: C.orange,
+    },
+    { label: "Facturas creadas", bg: C.greenLight, fg: C.green },
+    { label: "Facturas con error", bg: C.redLight, fg: C.red },
+    { label: "Sin empresa Dolibarr", bg: C.orangeLight, fg: C.orange },
+    { label: "Impresoras\ninactivas", bg: C.purpleLight, fg: C.purple },
   ];
   const kpiValues = [
     resumen.total_flota ?? resumen.total_impresoras,
@@ -143,8 +155,8 @@ function crearHojaResumen(wb, resultado, meta) {
     nInactivas,
   ];
 
-  ws.getRow(8).height  = 12; // hueco superior
-  ws.getRow(9).height  = 42; // etiquetas
+  ws.getRow(8).height = 12; // hueco superior
+  ws.getRow(9).height = 42; // etiquetas
   ws.getRow(10).height = 26; // valores
 
   kpiBoxes.forEach((k, i) => {
@@ -152,19 +164,23 @@ function crearHojaResumen(wb, resultado, meta) {
 
     // Etiqueta (fila 9)
     const hCell = ws.getCell(9, col);
-    hCell.value     = k.label;
-    hCell.fill      = fill(k.bg);
-    hCell.font      = font({ size: 11, bold: true, color: k.fg });
-    hCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    hCell.border    = border(k.fg, 'medium');
+    hCell.value = k.label;
+    hCell.fill = fill(k.bg);
+    hCell.font = font({ size: 11, bold: true, color: k.fg });
+    hCell.alignment = {
+      horizontal: "center",
+      vertical: "middle",
+      wrapText: true,
+    };
+    hCell.border = border(k.fg, "medium");
 
     // Valor (fila 10)
     const vCell = ws.getCell(10, col);
-    vCell.value     = kpiValues[i];
-    vCell.fill      = fill(k.bg);
-    vCell.font      = font({ size: 20, bold: true, color: k.fg });
-    vCell.alignment = align('center');
-    vCell.border    = border(k.fg, 'medium');
+    vCell.value = kpiValues[i];
+    vCell.fill = fill(k.bg);
+    vCell.font = font({ size: 20, bold: true, color: k.fg });
+    vCell.alignment = align("center");
+    vCell.border = border(k.fg, "medium");
     if (i === 1) {
       vCell.numFmt = '"* * * * *"'; // valor enmascarado; visible en barra de fórmulas al hacer clic
     }
@@ -177,28 +193,86 @@ function crearHojaResumen(wb, resultado, meta) {
   // Fila 13: Cabecera tabla categorías
   // — "Nº impresoras" fusiona B+C (así cabe el texto y la col B puede ser estrecha para el KPI)
   const catHeaderDefs = [
-    { col: 1, text: 'Categoría' },
-    { col: 2, text: 'Nº impresoras', merge: [13, 2, 13, 3] },
-    { col: 4, text: 'Acción recomendada', merge: [13, 4, 13, 6] },
+    { col: 1, text: "Categoría" },
+    { col: 2, text: "Nº impresoras", merge: [13, 2, 13, 3] },
+    { col: 4, text: "Acción recomendada", merge: [13, 4, 13, 6] },
   ];
   catHeaderDefs.forEach(({ col, text, merge }) => {
     if (merge) ws.mergeCells(...merge);
     const cell = ws.getCell(13, col);
-    cell.value     = text;
-    cell.fill      = fill(C.navy);
-    cell.font      = font({ bold: true, color: C.white });
-    cell.alignment = align('center');
+    cell.value = text;
+    cell.fill = fill(C.navy);
+    cell.font = font({ bold: true, color: C.white });
+    cell.alignment = align("center");
   });
   ws.getRow(13).height = 22;
 
   // Filas 14–18: categorías
   const cats = [
-    { icon: '✅', label: 'Facturadas correctamente',    n: nFacturadas, accion: 'Ninguna — facturado correctamente',                             bg: C.greenLight,  fontC: C.green },
-    { icon: '⚠️', label: 'Contador negativo ignorado',  n: nNegIgn,     accion: 'Revisar si procede ajuste manual en la factura',                bg: C.orangeLight, fontC: C.orange },
-    { icon: '■',  label: 'Sin consumo (0 copias)',       n: nSinConsumo, accion: 'Verificar si la máquina está operativa',                        bg: C.grayLight,   fontC: C.gray },
-    { icon: '✗',  label: 'Sin empresa en Dolibarr',     n: nSinEmpresa, accion: 'Crear/corregir el tercero en Dolibarr y refacturar',            bg: C.redLight,    fontC: C.red },
-    { icon: '⚠️', label: 'Sin precio en BD',            n: nSinPrecio,  accion: 'Registrar precio en BD y refacturar',                          bg: C.orangeLight, fontC: C.orange },
-    { icon: '✖',  label: 'Impresoras inactivas',         n: nInactivas,  accion: 'Revisar consumos y desactivarlos antes de facturar',           bg: C.purpleLight, fontC: C.purple },
+    {
+      icon: "✅",
+      label: "Facturadas correctamente",
+      n: nFacturadas,
+      accion: "Ninguna — facturado correctamente",
+      bg: C.greenLight,
+      fontC: C.green,
+    },
+    {
+      icon: "⚠️",
+      label: "Contador negativo ignorado",
+      n: nNegIgn,
+      accion: "Revisar si procede ajuste manual en la factura",
+      bg: C.orangeLight,
+      fontC: C.orange,
+    },
+    {
+      icon: "■",
+      label: "Sin consumo (0 copias)",
+      n: nSinConsumo,
+      accion: "Verificar si la máquina está operativa",
+      bg: C.grayLight,
+      fontC: C.gray,
+    },
+    {
+      icon: "🆕",
+      label: "Primera lectura alta (revisar)",
+      n: nBaseline,
+      accion: "Revisar historial / última lectura conocida y facturar a mano",
+      bg: C.navyLight,
+      fontC: C.navy,
+    },
+    {
+      icon: "✗",
+      label: "Sin empresa en Dolibarr",
+      n: nSinEmpresa,
+      accion: "Crear/corregir el tercero en Dolibarr y refacturar",
+      bg: C.redLight,
+      fontC: C.red,
+    },
+    {
+      icon: "🚫",
+      label: "Excluidas de facturación",
+      n: nExcluidas,
+      accion: "Ninguna — exclusión intencional (máquinas internas)",
+      bg: C.grayLight,
+      fontC: C.gray,
+    },
+    {
+      icon: "⚠️",
+      label: "Sin precio en BD",
+      n: nSinPrecio,
+      accion: "Registrar precio en BD y refacturar",
+      bg: C.orangeLight,
+      fontC: C.orange,
+    },
+    {
+      icon: "✖",
+      label: "Impresoras inactivas",
+      n: nInactivas,
+      accion: "Revisar consumos y desactivarlos antes de facturar",
+      bg: C.purpleLight,
+      fontC: C.purple,
+    },
   ];
 
   cats.forEach((cat, i) => {
@@ -206,27 +280,27 @@ function crearHojaResumen(wb, resultado, meta) {
     ws.getRow(row).height = 20;
 
     const cA = ws.getCell(row, 1);
-    cA.value     = `${cat.icon} ${cat.label}`;
-    cA.fill      = fill(cat.bg);
-    cA.font      = font({ bold: true, color: cat.fontC });
-    cA.alignment = align('left');
-    cA.border    = border();
+    cA.value = `${cat.icon} ${cat.label}`;
+    cA.fill = fill(cat.bg);
+    cA.font = font({ bold: true, color: cat.fontC });
+    cA.alignment = align("left");
+    cA.border = border();
 
     ws.mergeCells(row, 2, row, 3); // B-C: conteo
     const cB = ws.getCell(row, 2);
-    cB.value     = cat.n;
-    cB.fill      = fill(cat.bg);
-    cB.font      = font({ size: 12, bold: true, color: cat.fontC });
-    cB.alignment = align('center');
-    cB.border    = border();
+    cB.value = cat.n;
+    cB.fill = fill(cat.bg);
+    cB.font = font({ size: 12, bold: true, color: cat.fontC });
+    cB.alignment = align("center");
+    cB.border = border();
 
     ws.mergeCells(row, 4, row, 6); // D-F: acción
     const cC = ws.getCell(row, 4);
-    cC.value     = cat.accion;
-    cC.fill      = fill(cat.bg);
-    cC.font      = font({ color: cat.fontC });
-    cC.alignment = align('left');
-    cC.border    = border();
+    cC.value = cat.accion;
+    cC.fill = fill(cat.bg);
+    cC.font = font({ color: cat.fontC });
+    cC.alignment = align("left");
+    cC.border = border();
   });
 
   // Fila extra: desglose del importe no facturable (por qué el importe del
@@ -239,32 +313,41 @@ function crearHojaResumen(wb, resultado, meta) {
 
     ws.mergeCells(noteRow, 1, noteRow, 3);
     const nA = ws.getCell(noteRow, 1);
-    nA.value     = '⚠ Sin empresa Dolibarr — importe no facturable';
-    nA.fill      = fill(C.redLight);
-    nA.font      = font({ bold: true, color: C.red });
-    nA.alignment = align('left');
-    nA.border    = border(C.red);
+    nA.value = "⚠ Sin empresa Dolibarr — importe no facturable";
+    nA.fill = fill(C.redLight);
+    nA.font = font({ bold: true, color: C.red });
+    nA.alignment = align("left");
+    nA.border = border(C.red);
 
     ws.mergeCells(noteRow, 4, noteRow, 6);
     const nB = ws.getCell(noteRow, 4);
-    nB.value     = importeSinEmpresa;
-    nB.numFmt    = '"* * * * *"'; // valor enmascarado; visible en barra de fórmulas al hacer clic
-    nB.fill      = fill(C.redLight);
-    nB.font      = font({ size: 12, bold: true, color: C.red });
-    nB.alignment = align('right');
-    nB.border    = border(C.red);
+    nB.value = importeSinEmpresa;
+    nB.numFmt = '"* * * * *"'; // valor enmascarado; visible en barra de fórmulas al hacer clic
+    nB.fill = fill(C.redLight);
+    nB.font = font({ size: 12, bold: true, color: C.red });
+    nB.alignment = align("right");
+    nB.border = border(C.red);
 
     ws.getRow(noteRow + 1).height = 14;
     ws.mergeCells(noteRow + 1, 1, noteRow + 1, 6);
     const nC = ws.getCell(noteRow + 1, 1);
-    nC.value     = 'Este importe NO está incluido en "Importe facturable". Corresponde a impresoras cuya empresa no tiene tercero en Dolibarr. Para facturarlo: crear el tercero en Dolibarr y volver a ejecutar la facturación.';
-    nC.font      = font({ size: 9, color: C.red });
-    nC.alignment = { horizontal: 'left', vertical: 'top', wrapText: true };
+    nC.value =
+      'Este importe NO está incluido en "Importe facturable". Corresponde a impresoras cuya empresa no tiene tercero en Dolibarr. Para facturarlo: crear el tercero en Dolibarr y volver a ejecutar la facturación.';
+    nC.font = font({ size: 9, color: C.red });
+    nC.alignment = { horizontal: "left", vertical: "top", wrapText: true };
   }
 }
 
 // ── HOJA DETALLE (Facturadas / Neg. ignorado / Sin consumo) ──────────────────
-function crearHojaDetalle(wb, nombre, titulo, subtitulo, impresoras, colorPrincipal, colorLight) {
+function crearHojaDetalle(
+  wb,
+  nombre,
+  titulo,
+  subtitulo,
+  impresoras,
+  colorPrincipal,
+  colorLight,
+) {
   const ws = wb.addWorksheet(nombre);
   ws.views = [{ showGridLines: false }];
 
@@ -286,20 +369,20 @@ function crearHojaDetalle(wb, nombre, titulo, subtitulo, impresoras, colorPrinci
   ];
 
   // Fila 1: Título
-  ws.mergeCells('A1:N1');
-  const t = ws.getCell('A1');
-  t.value     = titulo;
-  t.fill      = fill(colorPrincipal);
-  t.font      = font({ size: 14, bold: true, color: C.white });
-  t.alignment = align('center');
+  ws.mergeCells("A1:N1");
+  const t = ws.getCell("A1");
+  t.value = titulo;
+  t.fill = fill(colorPrincipal);
+  t.font = font({ size: 14, bold: true, color: C.white });
+  t.alignment = align("center");
   ws.getRow(1).height = 28;
 
   // Fila 2: subtítulo
-  ws.mergeCells('A2:N2');
-  const s = ws.getCell('A2');
-  s.value     = subtitulo;
-  s.font      = font({ size: 10, color: C.gray });
-  s.alignment = align('center');
+  ws.mergeCells("A2:N2");
+  const s = ws.getCell("A2");
+  s.value = subtitulo;
+  s.font = font({ size: 10, color: C.gray });
+  s.alignment = align("center");
   ws.getRow(2).height = 18;
 
   // Fila 3: vacía
@@ -307,24 +390,35 @@ function crearHojaDetalle(wb, nombre, titulo, subtitulo, impresoras, colorPrinci
 
   // Fila 4: cabeceras
   const headers = [
-    'Empresa', 'Serial', 'Modelo', 'Fecha anterior', 'Fecha actual',
-    'BN anterior', 'BN actual', 'Copias BN', 'Copias color',
-    'Precio BN', 'Precio color', 'Importe (€)', 'ID Dolibarr', 'Observaciones',
+    "Empresa",
+    "Serial",
+    "Modelo",
+    "Fecha anterior",
+    "Fecha actual",
+    "BN anterior",
+    "BN actual",
+    "Copias BN",
+    "Copias color",
+    "Precio BN",
+    "Precio color",
+    "Importe (€)",
+    "ID Dolibarr",
+    "Observaciones",
   ];
   ws.getRow(4).height = 22;
   headers.forEach((h, i) => {
     const cell = ws.getCell(4, i + 1);
-    cell.value     = h;
-    cell.fill      = fill(colorPrincipal);
-    cell.font      = font({ bold: true, color: C.white, size: 10 });
-    cell.alignment = align('center');
-    cell.border    = border(C.white);
+    cell.value = h;
+    cell.fill = fill(colorPrincipal);
+    cell.font = font({ bold: true, color: C.white, size: 10 });
+    cell.alignment = align("center");
+    cell.border = border(C.white);
   });
 
   // Datos
   impresoras.forEach((imp, idx) => {
     const row = 5 + idx;
-    const bg  = idx % 2 === 0 ? C.white : colorLight;
+    const bg = idx % 2 === 0 ? C.white : colorLight;
     ws.getRow(row).height = 18;
 
     const d = imp.detalle || {};
@@ -337,32 +431,40 @@ function crearHojaDetalle(wb, nombre, titulo, subtitulo, impresoras, colorPrinci
       fmtFecha(imp.fecha_anterior),
       fmtFecha(imp.fecha_lectura),
       d.bn_anterior ?? 0,
-      d.bn_actual   ?? 0,
-      d.copias_bn   ?? 0,
-      d.copias_c1   ?? 0,
-      d.precio_bn   ?? 0,
-      d.precio_c1   ?? 0,
+      d.bn_actual ?? 0,
+      d.copias_bn ?? 0,
+      d.copias_c1 ?? 0,
+      d.precio_bn ?? 0,
+      d.precio_c1 ?? 0,
       d.importe_total ?? 0,
-      imp._idFactura ?? '',
+      imp._idFactura ?? "",
       obs,
     ];
 
     vals.forEach((v, i) => {
-      const cell    = ws.getCell(row, i + 1);
-      cell.value    = v;
-      cell.fill     = fill(bg);
-      cell.font     = font({ size: 10 });
-      cell.border   = border();
-      cell.alignment = align(typeof v === 'number' ? 'right' : 'left');
+      const cell = ws.getCell(row, i + 1);
+      cell.value = v;
+      cell.fill = fill(bg);
+      cell.font = font({ size: 10 });
+      cell.border = border();
+      cell.alignment = align(typeof v === "number" ? "right" : "left");
       // Formato numérico
-      if (i === 9 || i === 10) cell.numFmt = '0.0000€';  // precios
-      if (i === 11) cell.numFmt = '#,##0.00€';             // importe
+      if (i === 9 || i === 10) cell.numFmt = "0.0000€"; // precios
+      if (i === 11) cell.numFmt = "#,##0.00€"; // importe
     });
   });
 }
 
 // ── HOJA SIMPLE (Sin empresa / Sin precio) ────────────────────────────────────
-function crearHojaSimple(wb, nombre, titulo, subtitulo, impresoras, colorPrincipal, colorLight) {
+function crearHojaSimple(
+  wb,
+  nombre,
+  titulo,
+  subtitulo,
+  impresoras,
+  colorPrincipal,
+  colorLight,
+) {
   const ws = wb.addWorksheet(nombre);
   ws.views = [{ showGridLines: false }];
 
@@ -377,41 +479,49 @@ function crearHojaSimple(wb, nombre, titulo, subtitulo, impresoras, colorPrincip
   ];
 
   // Fila 1: Título
-  ws.mergeCells('A1:G1');
-  const t = ws.getCell('A1');
-  t.value     = titulo;
-  t.fill      = fill(colorPrincipal);
-  t.font      = font({ size: 14, bold: true, color: C.white });
-  t.alignment = align('center');
+  ws.mergeCells("A1:G1");
+  const t = ws.getCell("A1");
+  t.value = titulo;
+  t.fill = fill(colorPrincipal);
+  t.font = font({ size: 14, bold: true, color: C.white });
+  t.alignment = align("center");
   ws.getRow(1).height = 28;
 
   // Fila 2: subtítulo
-  ws.mergeCells('A2:G2');
-  const s = ws.getCell('A2');
-  s.value     = subtitulo;
-  s.font      = font({ size: 10, color: C.gray });
-  s.alignment = align('center');
+  ws.mergeCells("A2:G2");
+  const s = ws.getCell("A2");
+  s.value = subtitulo;
+  s.font = font({ size: 10, color: C.gray });
+  s.alignment = align("center");
   ws.getRow(2).height = 18;
 
   // Fila 3: vacía
   ws.getRow(3).height = 6;
 
   // Fila 4: cabeceras
-  const headers = ['Empresa', 'Serial', 'Modelo', 'Estado', 'BN anterior', 'BN actual', 'Motivo'];
+  const headers = [
+    "Empresa",
+    "Serial",
+    "Modelo",
+    "Estado",
+    "BN anterior",
+    "BN actual",
+    "Motivo",
+  ];
   ws.getRow(4).height = 22;
   headers.forEach((h, i) => {
     const cell = ws.getCell(4, i + 1);
-    cell.value     = h;
-    cell.fill      = fill(colorPrincipal);
-    cell.font      = font({ bold: true, color: C.white, size: 10 });
-    cell.alignment = align('center');
-    cell.border    = border(C.white);
+    cell.value = h;
+    cell.fill = fill(colorPrincipal);
+    cell.font = font({ bold: true, color: C.white, size: 10 });
+    cell.alignment = align("center");
+    cell.border = border(C.white);
   });
 
   // Datos
   impresoras.forEach((imp, idx) => {
     const row = 5 + idx;
-    const bg  = idx % 2 === 0 ? C.white : colorLight;
+    const bg = idx % 2 === 0 ? C.white : colorLight;
     ws.getRow(row).height = 18;
 
     const d = imp.detalle || {};
@@ -421,17 +531,17 @@ function crearHojaSimple(wb, nombre, titulo, subtitulo, impresoras, colorPrincip
       imp.modelo,
       imp.estado,
       d.bn_anterior ?? 0,
-      d.bn_actual   ?? 0,
+      d.bn_actual ?? 0,
       d.msg || imp.estado,
     ];
 
     vals.forEach((v, i) => {
-      const cell    = ws.getCell(row, i + 1);
-      cell.value    = v;
-      cell.fill     = fill(bg);
-      cell.font     = font({ size: 10 });
-      cell.border   = border();
-      cell.alignment = align(typeof v === 'number' ? 'right' : 'left');
+      const cell = ws.getCell(row, i + 1);
+      cell.value = v;
+      cell.fill = fill(bg);
+      cell.font = font({ size: 10 });
+      cell.border = border();
+      cell.alignment = align(typeof v === "number" ? "right" : "left");
     });
   });
 }
@@ -446,9 +556,9 @@ function construirObservaciones(detalle) {
     partes.push(`Color1 negativo (${detalle.aviso_color_negativo}), ignorado`);
   }
   if (detalle.absorbe_negativo) {
-    partes.push('Absorbe negativo del mes anterior');
+    partes.push("Absorbe negativo del mes anterior");
   }
-  return partes.join('; ') || detalle.msg || '';
+  return partes.join("; ") || detalle.msg || "";
 }
 
 // ── Función principal exportada ───────────────────────────────────────────────
@@ -456,15 +566,16 @@ async function generarReporteExcel(resultado, meta = {}) {
   const periodo = resultado.periodo;
 
   // Separar impresoras facturadas vs neg. ignorado
-  const facturadas  = [];
+  const facturadas = [];
   const negIgnorado = [];
   const idsPorSerial = meta.idsPorSerial || null;
-  for (const factura of (resultado.facturas_por_empresa || [])) {
-    for (const imp of (factura.impresoras || [])) {
+  for (const factura of resultado.facturas_por_empresa || []) {
+    for (const imp of factura.impresoras || []) {
       imp._socid = factura.socid;
       // ID de factura REALMENTE emitida en esta ejecución (vacío si la impresora
       // es facturable pero no se emitió en este run).
-      imp._idFactura = (idsPorSerial && idsPorSerial.get(imp.serial_number)) || '';
+      imp._idFactura =
+        (idsPorSerial && idsPorSerial.get(imp.serial_number)) || "";
       const d = imp.detalle || {};
       if (d.aviso_bn_negativo != null || d.aviso_color_negativo != null) {
         negIgnorado.push(imp);
@@ -488,26 +599,62 @@ async function generarReporteExcel(resultado, meta = {}) {
   });
   // contador_negativo = reset total (BN y color ambos negativos): no tiene aviso en
   // detalle (el motor lo devuelve por su propio estado), pero también va a "Neg. ignorado".
-  const contadorNegativoTotal = excluidas.filter((r) => r.estado === 'contador_negativo');
+  const contadorNegativoTotal = excluidas.filter(
+    (r) => r.estado === "contador_negativo",
+  );
   negIgnorado.push(...exclNeg, ...contadorNegativoTotal);
 
   // Restantes: sin aviso de contador negativo y sin estado contador_negativo.
   const sinConsumo = excluidas.filter((r) => {
     const d = r.detalle || {};
-    return r.estado === 'sin_consumo'
-      && d.aviso_bn_negativo == null && d.aviso_color_negativo == null;
+    return (
+      r.estado === "sin_consumo" &&
+      d.aviso_bn_negativo == null &&
+      d.aviso_color_negativo == null
+    );
   });
   const sinEmpresa = excluidas.filter((r) => {
     const d = r.detalle || {};
-    return r.estado === 'sin_empresa_dolibarr'
-      && d.aviso_bn_negativo == null && d.aviso_color_negativo == null;
+    return (
+      r.estado === "sin_empresa_dolibarr" &&
+      d.aviso_bn_negativo == null &&
+      d.aviso_color_negativo == null
+    );
+  });
+  // Empresas excluidas a propósito (máquinas internas): NO es un error a
+  // corregir, así que van en su propia hoja para no mezclarse con "Sin empresa".
+  const excluidasPorPolitica = excluidas.filter((r) => {
+    const d = r.detalle || {};
+    return (
+      r.estado === "empresa_excluida" &&
+      d.aviso_bn_negativo == null &&
+      d.aviso_color_negativo == null
+    );
   });
   const sinPrecio = excluidas.filter((r) => {
     const d = r.detalle || {};
-    return r.estado === 'sin_precio'
-      && d.aviso_bn_negativo == null && d.aviso_color_negativo == null;
+    return (
+      r.estado === "sin_precio" &&
+      d.aviso_bn_negativo == null &&
+      d.aviso_color_negativo == null
+    );
   });
-  const inactivas   = resultado.impresoras_inactivas || [];
+  // Primera lectura con demasiadas copias ya acumuladas: no se ha facturado
+  // automáticamente (podría ser historial sin facturar, o una impresora
+  // reasignada cuya última lectura real no tenemos) — necesita revisión
+  // manual. Las primeras lecturas normales (por debajo del umbral) YA se
+  // facturan solas y no pasan por aquí. Prioridad de avisos igual que el
+  // resto: si además trae un negativo, va a "Neg. ignorado".
+  const primeraLecturaAlta = excluidas.filter((r) => {
+    const d = r.detalle || {};
+    return (
+      r.estado === "primera_lectura_alta" &&
+      d.aviso_bn_negativo == null &&
+      d.aviso_color_negativo == null
+    );
+  });
+
+  const inactivas = resultado.impresoras_inactivas || [];
 
   // Inactivas que además tienen contador negativo → también van a "Neg. ignorado"
   // (son impresoras retiradas que tuvieron reset de contador en el periodo).
@@ -523,14 +670,16 @@ async function generarReporteExcel(resultado, meta = {}) {
   if (resultado.resumen) {
     const est = resultado.resumen.estados_impresoras;
     est.contador_negativo_ignorado = negIgnorado.length;
-    est.sin_consumo                = sinConsumo.length;
-    est.sin_empresa_dolibarr       = sinEmpresa.length;
-    est.sin_precio                 = sinPrecio.length;
+    est.sin_consumo = sinConsumo.length;
+    est.sin_empresa_dolibarr = sinEmpresa.length;
+    est.sin_precio = sinPrecio.length;
+    est.primera_lectura_alta = primeraLecturaAlta.length;
+    est.empresa_excluida = excluidasPorPolitica.length;
   }
 
   const wb = new ExcelJS.Workbook();
-  wb.creator  = 'ApiImpresoras';
-  wb.created  = new Date();
+  wb.creator = "ApiImpresoras";
+  wb.created = new Date();
   wb.modified = new Date();
 
   // Hoja 1: Resumen
@@ -539,7 +688,7 @@ async function generarReporteExcel(resultado, meta = {}) {
   // Hoja 2: Facturadas
   crearHojaDetalle(
     wb,
-    '✅ Facturadas',
+    "✅ Facturadas",
     `IMPRESORAS FACTURADAS CORRECTAMENTE — ${periodo}`,
     `${facturadas.length} impresoras incluidas en facturas enviadas a Dolibarr.`,
     facturadas,
@@ -550,9 +699,9 @@ async function generarReporteExcel(resultado, meta = {}) {
   // Hoja 3: Neg. ignorado
   crearHojaDetalle(
     wb,
-    '⚠️ Neg. ignorado',
+    "⚠️ Neg. ignorado",
     `CONTADORES NEGATIVOS IGNORADOS — ${periodo}`,
-    'Se facturó el componente positivo. El negativo fue ignorado. Revisar si procede ajuste.',
+    "Se facturó el componente positivo. El negativo fue ignorado. Revisar si procede ajuste.",
     negIgnorado,
     C.orange,
     C.orangeLight,
@@ -561,42 +710,64 @@ async function generarReporteExcel(resultado, meta = {}) {
   // Hoja 4: Sin consumo
   crearHojaDetalle(
     wb,
-    '■ Sin consumo',
+    "■ Sin consumo",
     `IMPRESORAS SIN CONSUMO — ${periodo}`,
-    'Diferencia 0 entre lecturas. Incluidas en factura con €0. Verificar si la máquina está operativa.',
+    "Diferencia 0 entre lecturas. Incluidas en factura con €0. Verificar si la máquina está operativa.",
     sinConsumo,
     C.gray,
     C.grayLight,
   );
 
-  // Hoja 5: Sin empresa
+  // Hoja 5: Primera lectura con copias altas (necesita revisión manual)
   crearHojaSimple(
     wb,
-    '✗ Sin empresa',
+    "🆕 Primera lectura alta",
+    `PRIMERA LECTURA CON MUCHAS COPIAS — ${periodo}`,
+    "Primera lectura de la impresora con más copias de las del umbral de anomalía — no se ha facturado. Revisar si es historial sin facturar o si viene de otra empresa (buscar su última lectura conocida) y facturar a mano.",
+    primeraLecturaAlta,
+    C.navy,
+    C.navyLight,
+  );
+
+  // Hoja 6: Sin empresa
+  crearHojaSimple(
+    wb,
+    "✗ Sin empresa",
     `SIN EMPRESA EN DOLIBARR — ${periodo}`,
-    'No se encontró el tercero en Dolibarr. No se ha facturado. Crear empresa y refacturar.',
+    "No se encontró el tercero en Dolibarr. No se ha facturado. Crear empresa y refacturar.",
     sinEmpresa,
     C.red,
     C.redLight,
   );
 
-  // Hoja 6: Sin precio
+  // Hoja 7: Excluidas por política (máquinas internas, nunca se facturan)
   crearHojaSimple(
     wb,
-    '⚠️ Sin precio',
+    "🚫 Excluidas",
+    `EMPRESAS EXCLUIDAS DE FACTURACIÓN — ${periodo}`,
+    "Marcadas a mano como 'nunca facturar' (p.ej. máquinas internas propias). No es un error: no requiere acción.",
+    excluidasPorPolitica,
+    C.gray,
+    C.grayLight,
+  );
+
+  // Hoja 8: Sin precio
+  crearHojaSimple(
+    wb,
+    "⚠️ Sin precio",
     `SIN PRECIO EN BASE DE DATOS — ${periodo}`,
-    'La impresora no tiene precio registrado en la BD. No se ha facturado.',
+    "La impresora no tiene precio registrado en la BD. No se ha facturado.",
     sinPrecio,
     C.orange,
     C.orangeLight,
   );
 
-  // Hoja 7: Inactivas
+  // Hoja 9: Inactivas
   crearHojaSimple(
     wb,
-    '✖ Inactivas',
+    "✖ Inactivas",
     `IMPRESORAS INACTIVAS — ${periodo}`,
-    'Marcadas como inactivas en BD. Revisar sus consumos antes de facturar para evitar facturas incorrectas.',
+    "Marcadas como inactivas en BD. Revisar sus consumos antes de facturar para evitar facturas incorrectas.",
     inactivas,
     C.purple,
     C.purpleLight,
@@ -604,8 +775,8 @@ async function generarReporteExcel(resultado, meta = {}) {
 
   // Guardar archivo
   const timestamp = fmtTimestamp();
-  const nombre    = `reporte_${periodo}_${timestamp}.xlsx`;
-  const exportsDir = path.join(process.cwd(), 'exports');
+  const nombre = `reporte_${periodo}_${timestamp}.xlsx`;
+  const exportsDir = path.join(process.cwd(), "exports");
   await fs.mkdir(exportsDir, { recursive: true });
   const ruta = path.join(exportsDir, nombre);
   await wb.xlsx.writeFile(ruta);
@@ -613,4 +784,32 @@ async function generarReporteExcel(resultado, meta = {}) {
   return { nombre, ruta };
 }
 
-module.exports = { generarReporteExcel };
+const EXPORTS_DIR = path.join(process.cwd(), "exports");
+
+async function listarReportes() {
+  await fs.mkdir(EXPORTS_DIR, { recursive: true });
+  const files = await fs.readdir(EXPORTS_DIR);
+  const reportes = [];
+  for (const nombre of files) {
+    if (!nombre.endsWith(".xlsx")) continue;
+    const st = await fs.stat(path.join(EXPORTS_DIR, nombre));
+    const m = nombre.match(/^reporte_(\d{4}-\d{2})_/); // reporte_<periodo>_<ts>.xlsx
+    reportes.push({
+      nombre,
+      periodo: m ? m[1] : null,
+      bytes: st.size,
+      creado: st.mtime,
+    });
+  }
+  reportes.sort((a, b) => b.creado - a.creado);
+  return reportes;
+}
+
+// Resuelve la ruta con guardia anti path-traversal (el nombre viene del cliente).
+function rutaReporte(nombre) {
+  const safe = path.basename(nombre);
+  if (safe !== nombre || !/^reporte_[\w-]+\.xlsx$/.test(safe)) return null;
+  return path.join(EXPORTS_DIR, safe);
+}
+
+module.exports = { generarReporteExcel, listarReportes, rutaReporte };
