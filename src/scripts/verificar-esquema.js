@@ -54,7 +54,7 @@ async function main() {
 
   console.log(
     faltanAlgo
-      ? "\nHay columnas que faltan — pásale este resultado a Claude para generar el ALTER TABLE exacto."
+      ? "\nHay columnas que faltan"
       : "\nTodo al día, no hace falta migrar nada.",
   );
 
