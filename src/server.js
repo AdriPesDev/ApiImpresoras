@@ -70,7 +70,20 @@ app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
 // app.use('/api/facturacion/ejecutar', writeLimiter);
 
 // ── Archivos estáticos: reportes Excel generados ──
-app.use("/exports", express.static(path.join(__dirname, "..", "exports")));
+// Content-Disposition: attachment fuerza la descarga directa — sin esto, el
+// navegador decide si lo descarga o intenta abrirlo/previsualizarlo según el
+// mime type y su configuración, lo cual no es fiable entre navegadores.
+app.use(
+  "/exports",
+  express.static(path.join(__dirname, "..", "exports"), {
+    setHeaders: (res, filePath) => {
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${path.basename(filePath)}"`,
+      );
+    },
+  }),
+);
 
 // ── Health check (público) ─────────────────────────
 app.get("/api/health", (req, res) => {
